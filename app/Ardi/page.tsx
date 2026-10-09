@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { PanelLeft } from "lucide-react";
 import Sidebar from "../components/Sidebar";
 import Chat from "../components/Chat";
 
@@ -15,14 +16,20 @@ export default function ArdiPage() {
     isActive: boolean;
   }>>([]);
   const [currentChatId, setCurrentChatId] = useState<string>('');
+  const currentChatIdRef = useRef('');
+  const didOpenInitialChat = useRef(false);
+  currentChatIdRef.current = currentChatId;
 
   const toggleSidebar = () => {
     setSidebarOpen(!sidebarOpen);
   };
 
   const toggleSidebarCollapse = () => {
-    console.log('toggleSidebarCollapse called, current state:', sidebarCollapsed);
-    setSidebarCollapsed(!sidebarCollapsed);
+    setSidebarCollapsed((current) => {
+      const next = !current;
+      localStorage.setItem('ardi-sidebar-collapsed', String(next));
+      return next;
+    });
   };
 
   useEffect(() => {
@@ -36,17 +43,18 @@ export default function ArdiPage() {
     return () => window.removeEventListener('resize', handleResize);
   }, [sidebarOpen]);
 
-  // Debug sidebar collapse state
   useEffect(() => {
-    console.log('Sidebar collapsed state changed to:', sidebarCollapsed);
-  }, [sidebarCollapsed]);
+    setSidebarCollapsed(localStorage.getItem('ardi-sidebar-collapsed') === 'true');
+  }, []);
 
   // Load chats from localStorage on component mount and when localStorage changes
   useEffect(() => {
     const loadChats = () => {
       const savedChats = localStorage.getItem('ardi-chats');
       if (savedChats) {
-        const parsedChats = JSON.parse(savedChats);
+        const parsedChats = JSON.parse(savedChats).filter(
+          (chat: { messages?: unknown[] }) => Array.isArray(chat.messages) && chat.messages.length > 0
+        );
         // Convert ChatData format to sidebar format and sort by most recent first
         const sidebarChats = parsedChats
           .map((chat: any) => {
@@ -71,7 +79,9 @@ export default function ArdiPage() {
               title: chat.title,
               preview: preview,
               timestamp: new Date(chat.createdAt).toLocaleDateString(),
-              isActive: chat.id === currentChatId
+              isActive: chat.id === currentChatIdRef.current,
+              isStarred: Boolean(chat.isStarred),
+              unread: Boolean(chat.unread)
             };
           })
           .sort((a: any, b: any) => {
@@ -82,8 +92,8 @@ export default function ArdiPage() {
           });
         setChats(sidebarChats);
         
-        if (parsedChats.length > 0 && !currentChatId) {
-          // Set the most recent chat as current only if no current chat is selected
+        if (!didOpenInitialChat.current && !currentChatIdRef.current && sidebarChats.length > 0) {
+          didOpenInitialChat.current = true;
           setCurrentChatId(sidebarChats[0].id);
         }
       }
@@ -107,9 +117,9 @@ export default function ArdiPage() {
     const handleNewChatCreated = (e: Event) => {
       const event = e as CustomEvent<any>;
       const newChatId = event?.detail?.chatId as string | undefined;
-      if (newChatId) {
-        setCurrentChatId(newChatId);
-      }
+      didOpenInitialChat.current = true;
+      currentChatIdRef.current = newChatId || '';
+      setCurrentChatId(newChatId || '');
       loadChats();
     };
 
@@ -122,7 +132,7 @@ export default function ArdiPage() {
       window.removeEventListener('chat-updated', handleChatUpdate);
       window.removeEventListener('new-chat-created', handleNewChatCreated as EventListener);
     };
-  }, [currentChatId]); // Include currentChatId to fix ESLint warning
+  }, []);
 
   const handleNewChat = () => {
     // Dispatch a custom event to trigger new chat creation
@@ -163,7 +173,7 @@ export default function ArdiPage() {
   };
 
   return (
-    <div className="h-screen flex bg-gray-50 overflow-hidden">
+    <div className="h-screen flex bg-gray-50 dark:bg-gray-900 overflow-hidden">
       <Sidebar 
         isOpen={sidebarOpen} 
         onClose={() => setSidebarOpen(false)} 
@@ -176,16 +186,28 @@ export default function ArdiPage() {
         onDeleteChat={handleDeleteChat}
       />
       <div className="flex-1 flex flex-col min-w-0 lg:ml-0 relative">
-        {/* Floating Sidebar Toggle Button */}
-        <button 
-          onClick={toggleSidebar}
-          className="lg:hidden fixed top-4 left-4 z-30 p-2 rounded-lg bg-white shadow-sm border border-gray-200 hover:bg-gray-50 transition-all duration-200 active:scale-95 touch-manipulation"
-          aria-label="Toggle sidebar"
-        >
-          <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-          </svg>
-        </button>
+        {!sidebarOpen && (
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            className="lg:hidden absolute top-3 left-3 z-40 p-2 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-800 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100 transition-colors"
+            aria-label="Open sidebar"
+            title="Open sidebar"
+          >
+            <PanelLeft className="w-4 h-4" strokeWidth={1.75} />
+          </button>
+        )}
+        {sidebarCollapsed && (
+          <button
+            type="button"
+            onClick={toggleSidebarCollapse}
+            className="hidden lg:flex absolute top-3 left-3 z-40 p-2 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-800 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100 transition-colors"
+            aria-label="Open sidebar"
+            title="Open sidebar"
+          >
+            <PanelLeft className="w-4 h-4" strokeWidth={1.75} />
+          </button>
+        )}
 
 
         
@@ -197,7 +219,7 @@ export default function ArdiPage() {
           />
         </div>
         {/* Mobile-only status bar */}
-        <div className="lg:hidden bg-white border-t border-gray-200 px-4 py-2 flex items-center justify-between text-xs text-gray-500">
+        <div className="lg:hidden bg-white dark:bg-gray-950 border-t border-gray-200 dark:border-gray-700 px-4 py-2 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
           <span>Ardi AI Assistant</span>
           <span>Online</span>
         </div>

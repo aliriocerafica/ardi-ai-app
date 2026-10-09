@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { filterContent } from '../../../lib/contentFilter';
-import { findKnowledge, shouldUseBasicKnowledge } from '../../../lib/knowledgeIndex';
+import { type ConversationTurn } from '../../../lib/knowledgeIndex';
+import { buildReply, composeNoMatch } from '../../../lib/composeResponse';
 
 import { customAIModel, isCustomAIModelReady, DEFAULT_AI_CONFIG } from '../../../lib/customAIModel';
 
@@ -10,7 +11,9 @@ import { customAIModel, isCustomAIModelReady, DEFAULT_AI_CONFIG } from '../../..
  */
 export async function POST(request: NextRequest) {
   try {
-    const { message, options = {} } = await request.json();
+    const body = await request.json();
+    const { message, options = {} } = body;
+    const history = sanitizeHistory(body?.history);
 
     if (!message || typeof message !== 'string') {
       return NextResponse.json(
@@ -31,39 +34,25 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Check if this is a basic identity question
-    if (shouldUseBasicKnowledge(message)) {
-      const knowledgeResult = findKnowledge(message);
-      if (knowledgeResult) {
-        return NextResponse.json({
-          response: knowledgeResult.content,
-          tableContent: knowledgeResult.tableContent,
-          source: knowledgeResult.source,
-          category: knowledgeResult.category,
-          handledBy: 'basic_knowledge'
-        });
-      }
+    const tailored = buildReply(message, history);
+    if (tailored) {
+      return NextResponse.json({
+        response: tailored.response,
+        source: tailored.source,
+        category: tailored.category,
+        handledBy: 'tailored_knowledge',
+        tailored: true
+      });
     }
 
     // Custom AI Model Integration
     if (!isCustomAIModelReady()) {
       return NextResponse.json({
-        response: `I'm Ardi, your AI legal assistant. I received your message: "${message}". 
-
-🚀 **Custom AI Model Integration Status: Not Ready**
-
-Your custom AI model is not yet configured. To complete the integration:
-
-1. Update the CustomAIModelImplementation class in lib/customAIModel.ts
-2. Implement your AI model's API calls in the generateResponse method
-3. Set isAvailable() to return true when your model is ready
-4. Configure your model's endpoint, API key, and parameters
-
-Once configured, I'll be able to provide comprehensive responses using your trained AI model.`,
-        source: 'Setup Instructions',
-        category: 'Configuration',
+        response: composeNoMatch(message, history),
+        source: 'Knowledge',
+        category: 'No match',
         needsCustomAIIntegration: true,
-        handledBy: 'setup_guide'
+        handledBy: 'tailored_knowledge'
       });
     }
 
@@ -75,7 +64,8 @@ Once configured, I'll be able to provide comprehensive responses using your trai
           ...DEFAULT_AI_CONFIG.context,
           ...(options.context || {})
         },
-        ...options
+        ...options,
+        history
       };
 
       const aiResponse = await customAIModel.generateResponse(message, aiConfig);
@@ -117,6 +107,21 @@ Once configured, I'll be able to provide comprehensive responses using your trai
 }
 
 // Model configuration endpoint
+function sanitizeHistory(value: unknown): ConversationTurn[] {
+  if (!Array.isArray(value)) return [];
+  const turns: ConversationTurn[] = [];
+  for (const item of value.slice(-8)) {
+    if (!item || typeof item !== 'object') continue;
+    const role = (item as { role?: unknown }).role;
+    const content = (item as { content?: unknown }).content;
+    if ((role !== 'user' && role !== 'assistant') || typeof content !== 'string') continue;
+    const trimmed = content.trim().slice(0, 800);
+    if (!trimmed) continue;
+    turns.push({ role, content: trimmed });
+  }
+  return turns;
+}
+
 export async function GET() {
   return NextResponse.json({
     status: 'ready_for_integration',

@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { findKnowledge, shouldUseBasicKnowledge, getFallbackResponse } from '../../../lib/knowledgeIndex';
+import { type ConversationTurn } from '../../../lib/knowledgeIndex';
+import { buildReply, composeNoMatch } from '../../../lib/composeResponse';
 import { filterContent } from '../../../lib/contentFilter';
 
 import { customAIModel, isCustomAIModelReady } from '../../../lib/customAIModel';
 
 export async function POST(request: NextRequest) {
   try {
-    const { message } = await request.json();
+    const body = await request.json();
+    const message = body?.message;
+    const history = sanitizeHistory(body?.history);
 
     if (!message || typeof message !== 'string') {
       return NextResponse.json(
@@ -27,18 +30,15 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Check if this should be handled by basic knowledge (Ardi identity questions)
-    if (shouldUseBasicKnowledge(message)) {
-      const knowledgeResult = findKnowledge(message);
-      if (knowledgeResult) {
-        return NextResponse.json({
-          response: knowledgeResult.content,
-          tableContent: knowledgeResult.tableContent,
-          source: knowledgeResult.source,
-          category: knowledgeResult.category,
-          isBasicKnowledge: true
-        });
-      }
+    const tailored = buildReply(message, history);
+    if (tailored) {
+      return NextResponse.json({
+        response: tailored.response,
+        source: tailored.source,
+        category: tailored.category,
+        isBasicKnowledge: true,
+        tailored: true
+      });
     }
 
     // Use custom AI model if available, otherwise fallback
@@ -46,12 +46,13 @@ export async function POST(request: NextRequest) {
       try {
         const aiResponse = await customAIModel.generateResponse(message, {
           temperature: 0.7,
-          maxTokens: 1000
+          maxTokens: 1000,
+          history
         });
         
         return NextResponse.json({
           response: aiResponse.content,
-          source: 'Custom AI Model',
+          source: 'Google Gemini',
           category: aiResponse.category || 'AI Generated',
           confidence: aiResponse.confidence,
           tokens_used: aiResponse.tokensUsed,
@@ -64,11 +65,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Fallback response when custom AI model is not ready or failed
-    const fallbackResponse = getFallbackResponse(message);
     return NextResponse.json({
-      response: fallbackResponse.content,
-      source: fallbackResponse.source,
-      category: fallbackResponse.category,
+      response: composeNoMatch(message, history),
+      source: 'Knowledge',
+      category: 'No match',
       needsAIModelIntegration: !isCustomAIModelReady(),
       modelStatus: isCustomAIModelReady() ? 'failed' : 'not_configured'
     });
@@ -80,6 +80,21 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+function sanitizeHistory(value: unknown): ConversationTurn[] {
+  if (!Array.isArray(value)) return [];
+  const turns: ConversationTurn[] = [];
+  for (const item of value.slice(-8)) {
+    if (!item || typeof item !== 'object') continue;
+    const role = (item as { role?: unknown }).role;
+    const content = (item as { content?: unknown }).content;
+    if ((role !== 'user' && role !== 'assistant') || typeof content !== 'string') continue;
+    const trimmed = content.trim().slice(0, 800);
+    if (!trimmed) continue;
+    turns.push({ role, content: trimmed });
+  }
+  return turns;
 }
 
 // Health check endpoint

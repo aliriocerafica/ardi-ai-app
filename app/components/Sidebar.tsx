@@ -3,9 +3,8 @@
 import { useState, useEffect } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
+import { ChevronRight, FolderInput, FolderPlus, Mail, MoreVertical, PanelLeft, Pencil, Pin, Trash2 } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -22,13 +21,15 @@ interface SidebarProps {
     preview: string;
     timestamp: string;
     isActive: boolean;
+    isStarred?: boolean;
+    unread?: boolean;
   }>;
 }
 
 export default function ArdiSidebar({ 
   isOpen, 
   onClose, 
-  isCollapsed, 
+  isCollapsed: sidebarHidden, 
   onToggleCollapse,
   onNewChat,
   onChatSelect,
@@ -36,6 +37,8 @@ export default function ArdiSidebar({
   currentChatId,
   chats
 }: SidebarProps) {
+  // Claude hides the whole panel. Keep the full sidebar layout while it slides away.
+  const isCollapsed = false;
   const { theme, toggleTheme } = useTheme();
   const [activeChat, setActiveChat] = useState<string>('1');
   const [touchStartX, setTouchStartX] = useState(0);
@@ -47,9 +50,15 @@ export default function ArdiSidebar({
     preview: string;
     timestamp: string;
     isActive: boolean;
+    isStarred?: boolean;
+    unread?: boolean;
   }>>([]);
   const [hoveredChatId, setHoveredChatId] = useState<string | null>(null);
   const [chatToDelete, setChatToDelete] = useState<string | null>(null);
+  const [menuChatId, setMenuChatId] = useState<string | null>(null);
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
+  const [submenu, setSubmenu] = useState<'project' | 'group' | null>(null);
+  const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
 
   useEffect(() => {
     const handleResize = () => {
@@ -138,6 +147,71 @@ export default function ArdiSidebar({
     setChatToDelete(null);
   };
 
+  const closeChatMenu = () => {
+    setMenuChatId(null);
+    setSubmenu(null);
+  };
+
+  const openChatMenu = (event: React.MouseEvent<HTMLButtonElement>, chatId: string) => {
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const menuWidth = 232;
+    const menuHeight = 292;
+    const left = Math.max(8, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8));
+    const top = rect.bottom + 6 + menuHeight > window.innerHeight
+      ? Math.max(8, rect.top - menuHeight - 6)
+      : rect.bottom + 6;
+    setMenuPosition({ top, left });
+    setMenuChatId(chatId);
+    setSubmenu(null);
+  };
+
+  const renameChat = (chatId: string, title: string) => {
+    const nextTitle = title.trim();
+    setRenamingChatId(null);
+    if (!nextTitle) return;
+    window.dispatchEvent(new CustomEvent('chat-rename', { detail: { chatId, title: nextTitle } }));
+  };
+
+  useEffect(() => {
+    if (!menuChatId) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Element;
+      if (!target.closest('.chat-options-menu') && !target.closest('.chat-options-button')) {
+        closeChatMenu();
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      if (event.key === 'Escape') {
+        closeChatMenu();
+        return;
+      }
+      if (key === 'p') {
+        window.dispatchEvent(new CustomEvent('chat-pin-toggle', { detail: { chatId: menuChatId } }));
+        closeChatMenu();
+      } else if (key === 'u') {
+        window.dispatchEvent(new CustomEvent('chat-unread-toggle', { detail: { chatId: menuChatId } }));
+        closeChatMenu();
+      } else if (key === 'r') {
+        setRenamingChatId(menuChatId);
+        closeChatMenu();
+      } else if (key === 'd') {
+        setChatToDelete(menuChatId);
+        closeChatMenu();
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [menuChatId]);
+
   const handleTouchStart = (e: React.TouchEvent) => {
     setTouchStartX(e.targetTouches[0].clientX);
   };
@@ -173,9 +247,12 @@ export default function ArdiSidebar({
       )}
 
       {/* Sidebar */}
-      <div className={`fixed inset-y-0 left-0 z-50 border-r border-gray-200 dark:border-gray-700 shadow-xl transform transition-transform duration-300 ease-in-out ${
+      <div className={`fixed inset-y-0 left-0 z-50 bg-white dark:bg-gray-950 border-r border-gray-200 dark:border-gray-700 flex flex-col transform transition-all duration-200 ease-in-out ${
         isOpen ? 'translate-x-0' : '-translate-x-full'
-      } ${isCollapsed ? 'w-14 sm:w-16 bg-white' : 'w-64 sm:w-80 bg-white dark:bg-gray-900'} lg:translate-x-0 lg:static flex flex-col`}
+      } ${sidebarHidden
+        ? 'w-64 sm:w-80 lg:w-0 lg:min-w-0 lg:overflow-hidden lg:border-r-0 lg:static lg:translate-x-0 lg:pointer-events-none'
+        : 'w-64 sm:w-80 lg:static lg:translate-x-0'
+      }`}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}>
@@ -214,16 +291,12 @@ export default function ArdiSidebar({
                     )}
                   </button>
                   <button 
-                    onClick={() => {
-                      console.log('Collapse button clicked (collapsed header), current state:', isCollapsed, 'Button pressed!');
-                      onToggleCollapse();
-                    }}
-                    className="p-2 rounded-lg bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 active:bg-gray-100 dark:active:bg-gray-600 border border-gray-200 dark:border-gray-600 transition-all duration-200 active:scale-95 touch-manipulation shadow-sm hover:shadow-md" 
-                    aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+                    onClick={onToggleCollapse}
+                    className="p-2 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-800 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100 transition-colors"
+                    aria-label="Open sidebar"
+                    title="Open sidebar"
                   >
-                    <svg className="w-3 h-3 text-gray-700 dark:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                    </svg>
+                    <PanelLeft className="w-4 h-4" strokeWidth={1.75} />
                   </button>
                 </div>
               </div>
@@ -264,26 +337,21 @@ export default function ArdiSidebar({
                     )}
                   </button>
                   <button 
-                    onClick={() => {
-                      console.log('Collapse button clicked (expanded header), current state:', isCollapsed, 'Button pressed!');
-                      onToggleCollapse();
-                    }}
-                    className="p-2 rounded-lg bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 active:bg-gray-100 dark:active:bg-gray-600 border border-gray-200 dark:border-gray-600 transition-all duration-200 active:scale-95 touch-manipulation shadow-sm hover:shadow-md" 
-                    aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+                    onClick={onToggleCollapse}
+                    className="p-2 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-800 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100 transition-colors"
+                    aria-label="Close sidebar"
+                    title="Close sidebar"
                   >
-                    <svg className="w-3 h-3 text-gray-700 dark:text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-                    </svg>
+                    <PanelLeft className="w-4 h-4" strokeWidth={1.75} />
                   </button>
                   
                   <button 
                     onClick={handleClose} 
-                    className="lg:hidden p-2 rounded-lg bg-gray-800 dark:bg-gray-700 hover:bg-gray-700 dark:hover:bg-gray-600 active:bg-gray-600 dark:active:bg-gray-500 border border-gray-700 dark:border-gray-600 transition-all duration-200 active:scale-95 touch-manipulation shadow-sm hover:shadow-md" 
+                    className="lg:hidden p-2 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-800 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100 transition-colors"
                     aria-label="Close sidebar"
+                    title="Close sidebar"
                   >
-                    <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                    </svg>
+                    <PanelLeft className="w-4 h-4" strokeWidth={1.75} />
                   </button>
                 </div>
               </>
@@ -392,115 +460,89 @@ export default function ArdiSidebar({
         {/* Chat History - Takes remaining space */}
         <div className={`flex-1 overflow-y-auto ${isCollapsed ? 'px-2' : 'px-3 sm:px-4'}`}>
           <div className={`${isCollapsed ? 'space-y-1' : 'space-y-1'} pb-3`}>
-            {!isCollapsed && (
-              <div className="flex items-center justify-between mb-2">
-                <h2 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                  Recent Chats
-                </h2>
-                <span className="text-xs text-gray-400 dark:text-gray-500">{chatHistory.length}</span>
-              </div>
+            {!isCollapsed && chatHistory.length > 0 && (
+              <h2 className="px-2 mb-1 text-xs font-medium text-gray-500 dark:text-gray-400">
+                Recent Chats
+              </h2>
             )}
             
-            {chatHistory.map((chat) => (
+            {[...chatHistory]
+              .sort((a, b) => Number(Boolean(b.isStarred)) - Number(Boolean(a.isStarred)))
+              .map((chat) => {
+              const isActive = (currentChatId !== undefined ? currentChatId : activeChat) === chat.id;
+              const menuOpen = menuChatId === chat.id;
+              const showActions = hoveredChatId === chat.id || menuOpen;
+              return (
               <div
                 key={chat.id}
                 onMouseEnter={() => setHoveredChatId(chat.id)}
                 onMouseLeave={() => setHoveredChatId(null)}
-                                  className={`group relative ${isCollapsed ? 'p-2' : 'px-2.5 py-2'} rounded-lg cursor-pointer transition-all duration-200 active:scale-[0.98] touch-manipulation mb-1 ${
-                    (currentChatId || activeChat) === chat.id
-                      ? 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 shadow-sm'
-                      : 'hover:bg-gray-50 dark:hover:bg-gray-800 active:bg-gray-100 dark:active:bg-gray-700 border border-transparent'
-                  }`}
-                title={isCollapsed ? chat.title : undefined}
+                className={`group relative flex items-center rounded-md cursor-pointer transition-colors touch-manipulation ${
+                  isCollapsed ? 'p-2 justify-center' : 'px-2 py-1.5'
+                } ${
+                  isActive || menuOpen
+                    ? 'bg-gray-100 dark:bg-white/10'
+                    : 'hover:bg-gray-100 dark:hover:bg-white/5'
+                }`}
+                title={chat.title}
               >
                 <div
                   onClick={() => {
+                    if (renamingChatId === chat.id) return;
                     if (onChatSelect) {
                       onChatSelect(chat.id);
                     }
                     setActiveChat(chat.id);
+                    window.dispatchEvent(new CustomEvent('chat-mark-read', { detail: { chatId: chat.id } }));
                     handleClose();
                   }}
-                  className="w-full"
+                  className="min-w-0 flex-1"
                 >
                   {isCollapsed ? (
-                    // Collapsed view - only dot indicator
                     <div className="flex items-center justify-center">
-                      <div className={`w-2 h-2 rounded-full transition-all duration-200 ${
-                        (currentChatId || activeChat) === chat.id 
-                          ? 'bg-red-500 scale-125' 
-                          : 'bg-gray-400 dark:bg-gray-500 hover:bg-gray-500 dark:hover:bg-gray-400'
+                      <div className={`w-2 h-2 rounded-full ${
+                        isActive
+                          ? 'bg-gray-700 dark:bg-gray-200'
+                          : 'bg-gray-400 dark:bg-gray-500'
                       }`}></div>
                     </div>
+                  ) : renamingChatId === chat.id ? (
+                    <input
+                      autoFocus
+                      defaultValue={chat.title}
+                      aria-label="Rename chat"
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') renameChat(chat.id, event.currentTarget.value);
+                        if (event.key === 'Escape') setRenamingChatId(null);
+                      }}
+                      onBlur={(event) => renameChat(chat.id, event.currentTarget.value)}
+                      className="w-full bg-transparent text-sm text-gray-800 dark:text-gray-200 outline-none"
+                    />
                   ) : (
-                    // Expanded view - full content
-                    <>
-                      <div className="flex items-start justify-between mb-1">
-                        <h3 className={`font-medium text-sm leading-4 pr-8 ${
-                          (currentChatId || activeChat) === chat.id ? 'text-red-700 dark:text-red-400' : 'text-gray-900 dark:text-gray-100'
-                        }`}>
-                          {chat.title}
-                        </h3>
-                        <div className="flex items-center space-x-1">
-                          {/* Removed red dot indicator for active chat */}
-                        </div>
-                      </div>
-                      
-                      <div className="text-xs text-gray-500 dark:text-gray-400 font-normal mb-1.5 overflow-hidden pr-6" style={{ lineHeight: '1.2', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical' }}>
-                        <ReactMarkdown 
-                          remarkPlugins={[remarkGfm]}
-                          components={{
-                            h1: () => null,
-                            h2: () => null,
-                            h3: () => null,
-                            h4: () => null,
-                            h5: () => null,
-                            h6: () => null,
-                            p: ({children}) => <span className="text-xs text-gray-500 dark:text-gray-400">{children}</span>,
-                            strong: ({children}) => <span className="text-xs text-gray-500 dark:text-gray-400 font-medium">{children}</span>,
-                            em: ({children}) => <span className="text-xs text-gray-500 dark:text-gray-400 italic">{children}</span>,
-                            ul: () => null,
-                            ol: () => null,
-                            li: () => null,
-                            blockquote: () => null,
-                            code: ({children}) => <span className="text-xs text-gray-500 dark:text-gray-400 font-mono">{children}</span>,
-                            hr: () => null,
-                            a: ({children}) => <span className="text-xs text-gray-500 dark:text-gray-400">{children}</span>,
-                            table: () => null,
-                            thead: () => null,
-                            tbody: () => null,
-                            tr: () => null,
-                            th: () => null,
-                            td: () => null,
-                          }}
-                        >
-                          {chat.preview}
-                        </ReactMarkdown>
-                      </div>
-                      
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-gray-400 dark:text-gray-500 font-normal">
-                          {chat.timestamp}
-                        </span>
-                      </div>
-                    </>
+                    <h3 className="truncate text-sm font-normal text-gray-800 dark:text-gray-200">
+                      {chat.title}
+                    </h3>
                   )}
                 </div>
 
-                {/* Delete Button - Only show in expanded view */}
-                {!isCollapsed && (hoveredChatId === chat.id || chatHistory.length > 1) && (
+                {!isCollapsed && showActions && (
                   <button
-                    onClick={(e) => deleteChat(chat.id, e)}
-                    className="absolute top-2 right-2 p-2 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-gray-100 dark:hover:bg-gray-700 active:bg-gray-200 dark:active:bg-gray-600 text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-all duration-200 active:scale-95 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 shadow-sm"
-                    title="Delete chat"
+                    type="button"
+                    onClick={(event) => openChatMenu(event, chat.id)}
+                    className="chat-options-button ml-1 shrink-0 rounded-md p-1 text-gray-500 hover:bg-black/5 hover:text-gray-800 dark:text-gray-300 dark:hover:bg-white/10 dark:hover:text-gray-100"
+                    aria-label="Chat options"
+                    title="Chat options"
                   >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1-1H9a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
+                    <MoreVertical className="w-4 h-4" strokeWidth={1.75} />
                   </button>
                 )}
+                {!isCollapsed && !showActions && chat.unread && (
+                  <span className="ml-2 h-2 w-2 shrink-0 rounded-full bg-sky-500" />
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -584,6 +626,104 @@ export default function ArdiSidebar({
           </div>
         )}
       </div>
+
+      {menuChatId && chatHistory.some((chat) => chat.id === menuChatId) && (
+        <div
+          className="chat-options-menu fixed z-[80] w-[232px] rounded-xl border border-white/10 bg-[#2a2a28] p-1.5 text-sm text-[#f2f1ec] shadow-2xl"
+          style={{ top: menuPosition.top, left: menuPosition.left }}
+        >
+          {(() => {
+            const menuChat = chatHistory.find((chat) => chat.id === menuChatId);
+            if (!menuChat) return null;
+            const itemClass = "flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-white/10";
+            return (
+              <>
+                <button
+                  type="button"
+                  className={itemClass}
+                  onClick={() => {
+                    window.dispatchEvent(new CustomEvent('chat-pin-toggle', { detail: { chatId: menuChat.id } }));
+                    closeChatMenu();
+                  }}
+                >
+                  <Pin className="h-4 w-4" strokeWidth={1.75} />
+                  <span className="flex-1">{menuChat.isStarred ? 'Unpin' : 'Pin'}</span>
+                  <span className="text-xs text-[#8a8984]">P</span>
+                </button>
+                <button
+                  type="button"
+                  className={itemClass}
+                  onClick={() => {
+                    window.dispatchEvent(new CustomEvent('chat-unread-toggle', { detail: { chatId: menuChat.id } }));
+                    closeChatMenu();
+                  }}
+                >
+                  <Mail className="h-4 w-4" strokeWidth={1.75} />
+                  <span className="flex-1">{menuChat.unread ? 'Mark as read' : 'Mark as unread'}</span>
+                  <span className="text-xs text-[#8a8984]">U</span>
+                </button>
+                <button
+                  type="button"
+                  className={itemClass}
+                  onClick={() => {
+                    setRenamingChatId(menuChat.id);
+                    closeChatMenu();
+                  }}
+                >
+                  <Pencil className="h-4 w-4" strokeWidth={1.75} />
+                  <span className="flex-1">Rename</span>
+                  <span className="text-xs text-[#8a8984]">R</span>
+                </button>
+                <div
+                  className="relative"
+                  onMouseEnter={() => setSubmenu('project')}
+                  onMouseLeave={() => setSubmenu((current) => current === 'project' ? null : current)}
+                >
+                  <button type="button" className={itemClass}>
+                    <FolderPlus className="h-4 w-4" strokeWidth={1.75} />
+                    <span className="flex-1">Add to project</span>
+                    <ChevronRight className="h-4 w-4 text-[#8a8984]" />
+                  </button>
+                  {submenu === 'project' && (
+                    <div className="absolute left-full top-0 z-[81] ml-1 w-44 rounded-xl border border-white/10 bg-[#2a2a28] p-2 text-[#8a8984] shadow-2xl">
+                      No projects yet
+                    </div>
+                  )}
+                </div>
+                <div
+                  className="relative"
+                  onMouseEnter={() => setSubmenu('group')}
+                  onMouseLeave={() => setSubmenu((current) => current === 'group' ? null : current)}
+                >
+                  <button type="button" className={itemClass}>
+                    <FolderInput className="h-4 w-4" strokeWidth={1.75} />
+                    <span className="flex-1">Move to group</span>
+                    <ChevronRight className="h-4 w-4 text-[#8a8984]" />
+                  </button>
+                  {submenu === 'group' && (
+                    <div className="absolute left-full top-0 z-[81] ml-1 w-44 rounded-xl border border-white/10 bg-[#2a2a28] p-2 text-[#8a8984] shadow-2xl">
+                      No groups yet
+                    </div>
+                  )}
+                </div>
+                <div className="my-1 border-t border-white/10" />
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[#e07a6a] hover:bg-white/10"
+                  onClick={(event) => {
+                    deleteChat(menuChat.id, event);
+                    closeChatMenu();
+                  }}
+                >
+                  <Trash2 className="h-4 w-4" strokeWidth={1.75} />
+                  <span className="flex-1">Delete</span>
+                  <span className="text-xs text-[#e07a6a]/70">D</span>
+                </button>
+              </>
+            );
+          })()}
+        </div>
+      )}
 
       {/* Delete Confirmation Dialog */}
       {chatToDelete !== null && (

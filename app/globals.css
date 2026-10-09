@@ -79,40 +79,69 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  color-scheme: dark;
+  /* Claude dark UI: near-black sidebar, charcoal canvas, warm text, terracotta accent */
+  --background: #181818;
+  --foreground: #f2f1ec;
+  --card: #202020;
+  --card-foreground: #f2f1ec;
+  --popover: #202020;
+  --popover-foreground: #f2f1ec;
+  --primary: #cc785c;
+  --primary-foreground: #faf9f5;
+  --secondary: #2a2a28;
+  --secondary-foreground: #f2f1ec;
+  --muted: #242422;
+  --muted-foreground: #b5b5b3;
+  --accent: #cc785c;
+  --accent-foreground: #faf9f5;
+  --destructive: #e06b5c;
+  --border: rgb(255 255 255 / 8%);
+  --input: #202020;
+  --ring: #cc785c;
+  --chart-1: #cc785c;
+  --chart-2: #7d9a84;
+  --chart-3: #c4b48a;
+  --chart-4: #8f8d86;
+  --chart-5: #d4a394;
+  --sidebar: #101010;
+  --sidebar-foreground: #f2f1ec;
+  --sidebar-primary: #cc785c;
+  --sidebar-primary-foreground: #faf9f5;
+  --sidebar-accent: #2a2a28;
+  --sidebar-accent-foreground: #f2f1ec;
+  --sidebar-border: rgb(255 255 255 / 8%);
+  --sidebar-ring: #cc785c;
+
+  --color-gray-50: #f7f6f2;
+  --color-gray-100: #f2f1ec;
+  --color-gray-200: #e4e3de;
+  --color-gray-300: #c8c7c2;
+  --color-gray-400: #b5b5b3;
+  --color-gray-500: #8a8984;
+  --color-gray-600: #3a3a38;
+  --color-gray-700: #2a2a28;
+  --color-gray-800: #202020;
+  --color-gray-900: #181818;
+  --color-gray-950: #101010;
+
+  --color-slate-50: #f7f6f2;
+  --color-slate-100: #f2f1ec;
+  --color-slate-200: #e4e3de;
+  --color-slate-300: #c8c7c2;
+  --color-slate-400: #b5b5b3;
+  --color-slate-500: #8a8984;
+  --color-slate-600: #3a3a38;
+  --color-slate-700: #2a2a28;
+  --color-slate-800: #202020;
+  --color-slate-900: #181818;
+  --color-slate-950: #101010;
 }
 
 @layer base {
+  html {
+    font-size: 90%;
+  }
   * {
     @apply border-border outline-ring/50;
   }
@@ -284,13 +313,14 @@
 }
 
 .dark ::-webkit-scrollbar-track {
-  @apply bg-gray-800;
+  background: #101010;
 }
 
 .dark ::-webkit-scrollbar-thumb {
-  @apply bg-gray-600 rounded;
+  background: #3a3a38;
+  border-radius: 9999px;
 }
 
 .dark ::-webkit-scrollbar-thumb:hover {
-  @apply bg-gray-500;
+  background: #4a4a48;
 }

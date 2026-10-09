@@ -22,12 +22,55 @@ interface ChatData {
   messages: Message[];
   createdAt: Date;
   isStarred: boolean;
+  unread?: boolean;
 }
 
 interface ChatProps {
   onNewChat?: () => void;
   onChatSelect?: (chatId: string) => void;
   currentChatId?: string;
+}
+
+const CHAT_COMMANDS = [
+  { name: 'help', description: 'Show the command list' },
+  { name: 'stop', description: 'Stop the reply being written' },
+  { name: 'new', description: 'Start a new chat' },
+  { name: 'questions', description: 'Show suggested questions' },
+  { name: 'retry', description: 'Ask the last question again' }
+];
+
+const HELP_REPLY = [
+  '**Commands**',
+  '',
+  '- **/help** — show this list',
+  '- **/stop** — stop the reply being written',
+  '- **/new** — start a new chat',
+  '- **/questions** — show suggested questions',
+  '- **/retry** — ask the last question again',
+  '',
+  'Type `/` in the message box to open the list.'
+].join('\n');
+
+interface ActiveGeneration {
+  id: number;
+  aborted: boolean;
+  chatId: string;
+  messageId: number | null;
+  shown: string;
+  timer: ReturnType<typeof setTimeout> | null;
+  controller: AbortController;
+}
+
+function nextStreamIndex(text: string, index: number): number {
+  if (index >= text.length) return text.length;
+  const step = 28;
+  const end = Math.min(text.length, index + step);
+  if (end >= text.length) return text.length;
+  const newline = text.indexOf('\n', index);
+  if (newline !== -1 && newline < end) return newline + 1;
+  const space = text.lastIndexOf(' ', end);
+  if (space > index + 8) return space + 1;
+  return end;
 }
 
 export default function Chat({ onNewChat, onChatSelect, currentChatId }: ChatProps) {
@@ -40,13 +83,19 @@ export default function Chat({ onNewChat, onChatSelect, currentChatId }: ChatPro
   const [displayedText, setDisplayedText] = useState<{ [key: number]: string }>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const [stopTyping, setStopTyping] = useState<null | (() => void)>(null);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isStarred, setIsStarred] = useState(false);
   const [isResponding, setIsResponding] = useState(false);
   const [canSendMessage, setCanSendMessage] = useState(true);
   const [showQuestions, setShowQuestions] = useState(false);
-  const [isMobile, setIsMobile] = useState(false);
+  const [commandIndex, setCommandIndex] = useState(0);
+  const messagesRef = useRef<Message[]>([]);
+  const currentChatIdRef = useRef('');
+  const generationRef = useRef<ActiveGeneration | null>(null);
+  const generationSeq = useRef(0);
+  const stopGenerationRef = useRef<() => Message[]>(() => messagesRef.current);
+  messagesRef.current = messages;
+  currentChatIdRef.current = internalCurrentChatId;
 
   // Predefined questions that users can ask
   const suggestedQuestions = [
@@ -146,57 +195,40 @@ export default function Chat({ onNewChat, onChatSelect, currentChatId }: ChatPro
   ];
 
   const createNewChat = useCallback(() => {
-    const newChat: ChatData = {
-      id: Date.now().toString(),
-      title: 'New Chat',
-      messages: [],
-      createdAt: new Date(),
-      isStarred: false
-    };
-    
-    setChats(prev => [...prev, newChat]);
-    setInternalCurrentChatId(newChat.id);
+    stopGenerationRef.current();
+    currentChatIdRef.current = '';
+    setInternalCurrentChatId('');
     setMessages([]);
     setIsStarred(false);
     setInputMessage('');
     setDisplayedText({});
-    
-    // Reset response states for new chat
     setIsTyping(false);
     setIsResponding(false);
-    setStopTyping(null);
     setCanSendMessage(true);
-    
-    // Dispatch event to notify sidebar of new chat creation
-    window.dispatchEvent(new CustomEvent('new-chat-created', { detail: { chatId: newChat.id } }));
-  }, []);
-
-  // Check if mobile on mount and resize
-  useEffect(() => {
-    const checkMobile = () => setIsMobile(window.innerWidth < 640);
-    checkMobile();
-    window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
+    window.dispatchEvent(new CustomEvent('new-chat-created', { detail: { chatId: '' } }));
   }, []);
 
   // Load chats from localStorage on component mount
   useEffect(() => {
     const savedChats = localStorage.getItem('ardi-chats');
     if (savedChats) {
-      const parsedChats = JSON.parse(savedChats);
+      const parsedChats = (JSON.parse(savedChats) as ChatData[]).filter(
+        (chat) => Array.isArray(chat.messages) && chat.messages.length > 0
+      );
       setChats(parsedChats);
       
-      // Set current chat to the most recent one or create a new one
       if (parsedChats.length > 0) {
         const mostRecentChat = parsedChats[parsedChats.length - 1];
         setInternalCurrentChatId(mostRecentChat.id);
         setMessages(mostRecentChat.messages);
         setIsStarred(mostRecentChat.isStarred);
       } else {
-        createNewChat();
+        setInternalCurrentChatId('');
+        setMessages([]);
       }
     } else {
-      createNewChat();
+      setInternalCurrentChatId('');
+      setMessages([]);
     }
   }, [createNewChat]);
 
@@ -213,30 +245,39 @@ export default function Chat({ onNewChat, onChatSelect, currentChatId }: ChatPro
   useEffect(() => {
     const currentChat = chats.find(chat => chat.id === internalCurrentChatId);
     if (currentChat) {
+      if (generationRef.current?.chatId === internalCurrentChatId) return;
       setMessages(currentChat.messages);
       setIsStarred(currentChat.isStarred);
-      // Reset response states when loading a chat
-      setIsTyping(false);
-      setIsResponding(false);
-      setStopTyping(null);
-      setCanSendMessage(true);
     }
   }, [internalCurrentChatId, chats]);
 
-  // Handle currentChatId prop changes from parent
+  // Handle currentChatId prop changes from parent.
+  // An empty id is a new draft and must not reload the previous chat.
   useEffect(() => {
-    if (currentChatId && currentChatId !== internalCurrentChatId) {
-      const targetChat = chats.find(chat => chat.id === currentChatId);
-      if (targetChat) {
-        setInternalCurrentChatId(currentChatId);
-        setMessages(targetChat.messages);
-        setIsStarred(targetChat.isStarred);
-        // Reset response states when switching to a different chat
-        setIsTyping(false);
-        setIsResponding(false);
-        setStopTyping(null);
-        setCanSendMessage(true);
+    if (!currentChatId) {
+      if (internalCurrentChatId) {
+        currentChatIdRef.current = '';
+        setInternalCurrentChatId('');
+        setMessages([]);
+        setIsStarred(false);
+        setInputMessage('');
+        setDisplayedText({});
       }
+      return;
+    }
+
+    if (currentChatId === internalCurrentChatId) return;
+
+    const targetChat = chats.find(chat => chat.id === currentChatId);
+    if (targetChat) {
+      currentChatIdRef.current = currentChatId;
+      stopGenerationRef.current();
+      setInternalCurrentChatId(currentChatId);
+      setMessages(targetChat.messages);
+      setIsStarred(targetChat.isStarred);
+      setIsTyping(false);
+      setIsResponding(false);
+      setCanSendMessage(true);
     }
   }, [currentChatId, chats, internalCurrentChatId]);
 
@@ -256,16 +297,15 @@ export default function Chat({ onNewChat, onChatSelect, currentChatId }: ChatPro
 
   const switchToChat = (chatId: string) => {
     setInternalCurrentChatId(chatId);
-    // Reset response states when switching chats
+    stopGenerationRef.current();
     setIsTyping(false);
     setIsResponding(false);
-    setStopTyping(null);
     setCanSendMessage(true);
   };
 
-  const updateCurrentChat = (updatedMessages: Message[]) => {
+  const updateCurrentChat = (updatedMessages: Message[], chatId = internalCurrentChatId) => {
     setChats(prev => prev.map(chat => 
-      chat.id === internalCurrentChatId 
+      chat.id === chatId 
         ? { ...chat, messages: updatedMessages }
         : chat
     ));
@@ -299,10 +339,45 @@ export default function Chat({ onNewChat, onChatSelect, currentChatId }: ChatPro
         setMessages(mostRecentChat.messages);
         setIsStarred(mostRecentChat.isStarred);
       } else {
-        createNewChat();
+        setInternalCurrentChatId('');
+        setMessages([]);
+        setInputMessage('');
+        setIsStarred(false);
       }
     }
-  }, [chats, internalCurrentChatId, createNewChat]);
+  }, [chats, internalCurrentChatId]);
+
+  useEffect(() => {
+    const handlePin = (event: Event) => {
+      const chatId = (event as CustomEvent<{ chatId?: string }>).detail?.chatId;
+      if (chatId) toggleChatStar(chatId);
+    };
+    const handleRename = (event: Event) => {
+      const detail = (event as CustomEvent<{ chatId?: string; title?: string }>).detail;
+      if (detail?.chatId && detail.title) updateChatTitle(detail.chatId, detail.title);
+    };
+    const handleUnread = (event: Event) => {
+      const chatId = (event as CustomEvent<{ chatId?: string }>).detail?.chatId;
+      if (!chatId) return;
+      setChats(prev => prev.map(chat => chat.id === chatId ? { ...chat, unread: !chat.unread } : chat));
+    };
+    const handleRead = (event: Event) => {
+      const chatId = (event as CustomEvent<{ chatId?: string }>).detail?.chatId;
+      if (!chatId) return;
+      setChats(prev => prev.map(chat => chat.id === chatId ? { ...chat, unread: false } : chat));
+    };
+
+    window.addEventListener('chat-pin-toggle', handlePin);
+    window.addEventListener('chat-rename', handleRename);
+    window.addEventListener('chat-unread-toggle', handleUnread);
+    window.addEventListener('chat-mark-read', handleRead);
+    return () => {
+      window.removeEventListener('chat-pin-toggle', handlePin);
+      window.removeEventListener('chat-rename', handleRename);
+      window.removeEventListener('chat-unread-toggle', handleUnread);
+      window.removeEventListener('chat-mark-read', handleRead);
+    };
+  }, []);
 
   // Handle chat deletion from sidebar
   useEffect(() => {
@@ -378,44 +453,8 @@ export default function Chat({ onNewChat, onChatSelect, currentChatId }: ChatPro
       return newDisplayedText;
     });
 
-            // Generate a new response
-        setIsTyping(true);
-        setIsResponding(true);
-        setCanSendMessage(false); // Disable sending new messages while responding
-        
-        const getNewResponse = async () => {
-          try {
-            const newArdiResponseText = await getArdiResponse(userMessage.content);
-            if (typeof newArdiResponseText === 'string' && newArdiResponseText.length > 0) {
-              const newArdiMessage: Message = {
-                id: Date.now() + Math.random(), // Ensure unique ID
-                sender: 'ardi',
-                content: newArdiResponseText,
-                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              };
-              
-              const newMessages = [...updatedMessages, newArdiMessage];
-              setMessages(newMessages);
-              updateCurrentChat(newMessages);
-              
-              // Start typing effect for the new response
-              setTimeout(() => {
-                typeWriterEffect(newArdiMessage.id, newArdiResponseText);
-              }, 50);
-            } else {
-              setIsTyping(false);
-              setIsResponding(false);
-              setCanSendMessage(true); // Re-enable sending messages if no response
-            }
-          } catch (error) {
-            console.error('Error getting Ardi response:', error);
-            setIsTyping(false);
-            setIsResponding(false);
-            setCanSendMessage(true);
-          }
-        };
-        
-        setTimeout(getNewResponse, 100);
+    messagesRef.current = updatedMessages;
+    queueAssistantReply(internalCurrentChatId, updatedMessages, userMessage.content);
   };
 
   const handleEditMessage = (messageId: number, newContent: string) => {
@@ -446,56 +485,25 @@ export default function Chat({ onNewChat, onChatSelect, currentChatId }: ChatPro
           return newDisplayedText;
         });
 
-        // Generate a new response based on the edited user message
-        setIsTyping(true);
-        setIsResponding(true);
-        setCanSendMessage(false); // Disable sending new messages while responding
-        
-        const getNewResponse = async () => {
-          try {
-            const newArdiResponseText = await getArdiResponse(newContent.trim());
-            if (typeof newArdiResponseText === 'string' && newArdiResponseText.length > 0) {
-              const newArdiMessage: Message = {
-                id: Date.now() + Math.random(), // Ensure unique ID
-                sender: 'ardi',
-                content: newArdiResponseText,
-                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              };
-              
-              const newMessages = [...messagesWithoutArdi, newArdiMessage];
-              setMessages(newMessages);
-              updateCurrentChat(newMessages);
-              
-              // Start typing effect for the new response
-              setTimeout(() => {
-                typeWriterEffect(newArdiMessage.id, newArdiResponseText);
-              }, 50);
-            } else {
-              setIsTyping(false);
-              setIsResponding(false);
-              setCanSendMessage(true); // Re-enable sending messages if no response
-            }
-          } catch (error) {
-            console.error('Error getting Ardi response:', error);
-            setIsTyping(false);
-            setIsResponding(false);
-            setCanSendMessage(true);
-          }
-        };
-        
-        setTimeout(getNewResponse, 100);
+        messagesRef.current = messagesWithoutArdi;
+        queueAssistantReply(internalCurrentChatId, messagesWithoutArdi, newContent.trim());
       }
     }
   };
 
-  const getArdiResponse = async (userMessage: string) => {
+  const getArdiResponse = async (
+    userMessage: string,
+    signal?: AbortSignal,
+    history: { role: 'user' | 'assistant'; content: string }[] = []
+  ) => {
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ message: userMessage }),
+        body: JSON.stringify({ message: userMessage, history }),
+        signal,
       });
 
       if (!response.ok) {
@@ -515,8 +523,10 @@ export default function Chat({ onNewChat, onChatSelect, currentChatId }: ChatPro
       
       return data.response;
     } catch (error) {
+      if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
+        throw error;
+      }
       console.error('Error getting Ardi response:', error);
-      // Fallback to client-side processing if API fails
       return getFallbackResponse(userMessage);
     }
   };
@@ -1003,278 +1013,217 @@ export default function Chat({ onNewChat, onChatSelect, currentChatId }: ChatPro
     }
   }, [typingMessageId, scrollToNewest]);
 
-  const typeWriterEffect = (messageId: number, fullText: string) => {
-    setTypingMessageId(messageId);
-    setDisplayedText(prev => ({ ...prev, [messageId]: '' }));
-    setCanSendMessage(false); // Disable sending new messages while responding
-    let currentIndex = 0;
-    let stopped = false;
-    let isThinking = false;
-    
-    // Provide a stop function
-    setStopTyping(() => () => {
-      stopped = true;
-      setDisplayedText(prev => ({ ...prev, [messageId]: fullText }));
-      setTypingMessageId(null);
-      setIsTyping(false);
-      setIsResponding(false);
-      setCanSendMessage(true); // Re-enable sending messages
-      setStopTyping(null);
-      // Final scroll to ensure optimal position when typing is stopped
-      setTimeout(() => scrollToNewest(), 50);
-    });
-    
-    // Function to get the next letter or small chunk for realistic typing
-    const getNextChunk = (text: string, currentPos: number) => {
-      if (currentPos >= text.length) return '';
-      
-      const remainingText = text.slice(currentPos);
-      
-      // For very realistic typing, we'll type letter by letter most of the time
-      // But occasionally type small words or punctuation for natural flow
-      
-      // Check for complete words (3-5 letters) occasionally
-      if (Math.random() < 0.3) { // 30% chance to type a small word
-        const wordMatch = remainingText.match(/^([a-zA-Z]{2,4})\b/);
-        if (wordMatch) return wordMatch[0];
-      }
-      
-      // Check for punctuation marks
-      const punctuationMatch = remainingText.match(/^([.,!?;:])/);
-      if (punctuationMatch) return punctuationMatch[0];
-      
-      // Check for spaces
-      if (remainingText[0] === ' ') return ' ';
-      
-      // Check for newlines
-      if (remainingText[0] === '\n') return '\n';
-      
-      // Otherwise, type one letter at a time
-      return remainingText[0] || '';
-    };
-    
-    const typeNextChunk = () => {
-      if (stopped) return;
-      if (currentIndex < fullText.length) {
-        const nextChunk = getNextChunk(fullText, currentIndex);
-        const newText = fullText.slice(0, currentIndex) + nextChunk;
-        
-        setDisplayedText(prev => ({
-          ...prev,
-          [messageId]: newText
-        }));
-        
-        currentIndex += nextChunk.length;
-        
-        // Maximum fast typing speed - varies based on what we're typing
-        let delay: number;
-        
-        if (nextChunk.length === 1) {
-          // Single letter - ultra fast typing speed
-          if (nextChunk === ' ') {
-            delay = Math.random() * 2 + 1; // 1-3ms for spaces
-          } else if (nextChunk === '\n') {
-            delay = Math.random() * 5 + 3; // 3-8ms for line breaks
-          } else {
-            delay = Math.random() * 3 + 2; // 2-5ms for letters
-          }
-        } else {
-          // Small words - ultra quick pause
-          delay = Math.random() * 4 + 2; // 2-6ms for words
-        }
-        
-        // Add occasional minimal pauses to simulate thinking
-        if (Math.random() < 0.005) { // 0.5% chance
-          delay += Math.random() * 20 + 10; // Add 10-30ms pause
-          isThinking = true;
-          
-          // Show thinking indicator
-          setTimeout(() => {
-            if (!stopped) {
-              setDisplayedText(prev => ({
-                ...prev,
-                [messageId]: prev[messageId] + '...'
-              }));
-              setTimeout(() => {
-                if (!stopped) {
-                  setDisplayedText(prev => ({
-                    ...prev,
-                    [messageId]: prev[messageId].slice(0, -3) // Remove the "..."
-                  }));
-                  isThinking = false;
-                }
-              }, 30);
-            }
-          }, delay - 30);
-        }
-        
-        // Occasionally simulate a typo and correction (very rare)
-        if (Math.random() < 0.02 && nextChunk.length === 1 && /[a-zA-Z]/.test(nextChunk)) { // 2% chance
-          const typoChar = String.fromCharCode(97 + Math.floor(Math.random() * 26)); // Random letter
-          setTimeout(() => {
-            if (!stopped) {
-              setDisplayedText(prev => ({
-                ...prev,
-                [messageId]: prev[messageId] + typoChar
-              }));
-              setTimeout(() => {
-                if (!stopped) {
-                  setDisplayedText(prev => ({
-                    ...prev,
-                    [messageId]: prev[messageId].slice(0, -1) + nextChunk
-                  }));
-                }
-              }, 15);
-            }
-          }, delay - 10);
-        }
-        
-        setTimeout(typeNextChunk, delay);
-      } else {
-        setTypingMessageId(null);
-        setIsTyping(false);
-        setIsResponding(false);
-        setCanSendMessage(true); // Re-enable sending messages
-        setStopTyping(null);
-        // Final scroll to ensure optimal position after typing completes
-        setTimeout(() => scrollToNewest(), 100);
-      }
-    };
-    
-    // Show animated thinking indicator first
-    let thinkingDots = '';
-    const showThinkingDots = () => {
-      if (stopped) return;
-      if (thinkingDots.length < 3) {
-        thinkingDots += '.';
-        setDisplayedText(prev => ({ ...prev, [messageId]: thinkingDots }));
-        setTimeout(showThinkingDots, 100);
-      } else {
-        // Start typing after showing thinking indicator
-        setTimeout(() => {
-          setDisplayedText(prev => ({ ...prev, [messageId]: '' }));
-          setTimeout(() => {
-            typeNextChunk();
-          }, 100); // Small pause after clearing thinking indicator
-        }, 200); // Show thinking dots for 200ms
-      }
-    };
-    
-    // Start showing thinking dots
-    setTimeout(showThinkingDots, 50);
+  const releaseGeneration = () => {
+    setTypingMessageId(null);
+    setIsTyping(false);
+    setIsResponding(false);
+    setCanSendMessage(true);
   };
 
-  // Ensure responses complete if user leaves tab/page or component unmounts
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.hidden && stopTyping) {
-        stopTyping();
-      }
-    };
+  const stopGeneration = (): Message[] => {
+    const gen = generationRef.current;
+    if (!gen) return messagesRef.current;
 
-    const handleBeforeUnload = () => {
-      if (stopTyping) {
-        stopTyping();
-      }
-    };
+    gen.aborted = true;
+    gen.controller.abort();
+    if (gen.timer) clearTimeout(gen.timer);
+    generationRef.current = null;
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Stop response with Ctrl+C or Esc
-      if ((e.ctrlKey && e.key === 'c') || e.key === 'Escape') {
-        if (stopTyping) {
-          e.preventDefault();
-          stopTyping();
+    let nextMessages = messagesRef.current;
+    if (gen.messageId != null) {
+      const partial = gen.shown.trim();
+      if (partial) {
+        nextMessages = nextMessages.map(message =>
+          message.id === gen.messageId ? { ...message, content: partial } : message
+        );
+        setDisplayedText(prev => ({ ...prev, [gen.messageId as number]: partial }));
+      } else {
+        nextMessages = nextMessages.filter(message => message.id !== gen.messageId);
+        setDisplayedText(prev => {
+          const next = { ...prev };
+          delete next[gen.messageId as number];
+          return next;
+        });
+      }
+    }
+
+    messagesRef.current = nextMessages;
+    if (currentChatIdRef.current === gen.chatId) {
+      setMessages(nextMessages);
+    }
+    updateCurrentChat(nextMessages, gen.chatId);
+    releaseGeneration();
+    return nextMessages;
+  };
+  stopGenerationRef.current = stopGeneration;
+
+  const streamAssistantText = (messageId: number, fullText: string) => {
+    const gen = generationRef.current;
+    if (!gen || gen.aborted) return;
+
+    gen.messageId = messageId;
+    gen.shown = '';
+    setTypingMessageId(messageId);
+    setDisplayedText(prev => ({ ...prev, [messageId]: '' }));
+
+    let index = 0;
+    const step = () => {
+      const current = generationRef.current;
+      if (!current || current.aborted || current.messageId !== messageId) return;
+
+      if (index >= fullText.length) {
+        const finished = messagesRef.current.map(message =>
+          message.id === messageId ? { ...message, content: fullText } : message
+        );
+        messagesRef.current = finished;
+        if (currentChatIdRef.current === current.chatId) {
+          setMessages(finished);
+          setDisplayedText(prev => ({ ...prev, [messageId]: fullText }));
         }
+        updateCurrentChat(finished, current.chatId);
+        generationRef.current = null;
+        releaseGeneration();
+        return;
       }
+
+      index = nextStreamIndex(fullText, index);
+      const shown = fullText.slice(0, index);
+      current.shown = shown;
+      if (currentChatIdRef.current === current.chatId) {
+        setDisplayedText(prev => ({ ...prev, [messageId]: shown }));
+      }
+      current.timer = setTimeout(step, 24);
     };
 
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    document.addEventListener('keydown', handleKeyDown);
+    gen.timer = setTimeout(step, 24);
+  };
 
+  useEffect(() => {
     return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      document.removeEventListener('keydown', handleKeyDown);
-      if (stopTyping) {
-        stopTyping();
-      }
+      const gen = generationRef.current;
+      if (!gen) return;
+      gen.aborted = true;
+      gen.controller.abort();
+      if (gen.timer) clearTimeout(gen.timer);
     };
-  }, [stopTyping]);
+  }, []);
+
+  const queueAssistantReply = (chatId: string, baseMessages: Message[], prompt: string) => {
+    const active = generationRef.current;
+    if (active) {
+      active.aborted = true;
+      active.controller.abort();
+      if (active.timer) clearTimeout(active.timer);
+      generationRef.current = null;
+    }
+
+    const controller = new AbortController();
+    const id = ++generationSeq.current;
+    generationRef.current = {
+      id,
+      aborted: false,
+      chatId,
+      messageId: null,
+      shown: '',
+      timer: null,
+      controller,
+    };
+    messagesRef.current = baseMessages;
+    setIsTyping(true);
+    setIsResponding(true);
+    setCanSendMessage(false);
+
+    void (async () => {
+      try {
+        const history = baseMessages
+          .filter(message => message.content.trim())
+          .map(message => ({
+            role: message.sender === 'user' ? 'user' as const : 'assistant' as const,
+            content: message.content.slice(0, 800)
+          }));
+        if (
+          history.length > 0 &&
+          history[history.length - 1].role === 'user' &&
+          history[history.length - 1].content === prompt
+        ) {
+          history.pop();
+        }
+        const ardiResponseText = await getArdiResponse(prompt, controller.signal, history.slice(-6));
+        const gen = generationRef.current;
+        if (!gen || gen.id !== id || gen.aborted) return;
+
+        if (typeof ardiResponseText !== 'string' || ardiResponseText.length === 0) {
+          generationRef.current = null;
+          releaseGeneration();
+          return;
+        }
+
+        const ardiMessage: Message = {
+          id: Date.now() + 1,
+          sender: 'ardi',
+          content: '',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        };
+        const finalMessages = [...messagesRef.current, ardiMessage];
+        messagesRef.current = finalMessages;
+        if (currentChatIdRef.current === chatId) {
+          setMessages(finalMessages);
+          setDisplayedText(prev => ({ ...prev, [ardiMessage.id]: '' }));
+        }
+        updateCurrentChat(finalMessages, chatId);
+        streamAssistantText(ardiMessage.id, ardiResponseText);
+      } catch (error) {
+        const gen = generationRef.current;
+        if (!gen || gen.id !== id || gen.aborted) return;
+        console.error('Error getting Ardi response:', error);
+        generationRef.current = null;
+        releaseGeneration();
+      }
+    })();
+  };
 
   const sendMessage = () => {
-    if (inputMessage.trim() === '' || !canSendMessage || isTyping || typingMessageId !== null || isResponding) return;
+    const text = inputMessage.trim();
+    if (text === '') return;
 
-    // Add user message
+    const base = generationRef.current ? stopGeneration() : messagesRef.current;
     const userMessage: Message = {
       id: Date.now(),
       sender: 'user',
-      content: inputMessage,
+      content: text,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
-    const newMessages = [...messages, userMessage];
-    setMessages(newMessages);
-    updateCurrentChat(newMessages);
-    
-    // Update chat title if this is the first message
-    if (messages.length === 0) {
-      const title = inputMessage.length > 30 ? inputMessage.substring(0, 30) + '...' : inputMessage;
-      updateChatTitle(internalCurrentChatId, title);
-    }
-    
-    setInputMessage('');
-    setIsTyping(true);
-    setIsResponding(true);
-    setCanSendMessage(false); // Disable sending new messages while responding
+    const title = text.length > 30 ? text.substring(0, 30) + '...' : text;
+    const existing = chats.find(chat => chat.id === internalCurrentChatId);
+    let chatId = internalCurrentChatId;
+    let newMessages = [...base, userMessage];
 
-    // Auto-scroll will be triggered by useEffect when message is added
-
-    // Get Ardi response asynchronously
-    const getResponse = async () => {
-      try {
-        const ardiResponseText = await getArdiResponse(inputMessage);
-        
-        // Handle case where response is null (high severity inappropriate content)
-        if (ardiResponseText === null) {
-          setIsTyping(false);
-          setIsResponding(false);
-          setCanSendMessage(true);
-          return;
-        }
-        
-        if (typeof ardiResponseText === 'string' && ardiResponseText.length > 0) {
-          const responseText: string = ardiResponseText;
-          const ardiMessage: Message = {
-            id: Date.now() + 1,
-            sender: 'ardi',
-            content: responseText,
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-          };
-          
-          const finalMessages = [...newMessages, ardiMessage];
-          setMessages(finalMessages);
-          updateCurrentChat(finalMessages);
-          
-          // Start typing effect for Ardi's response
-          setTimeout(() => {
-            typeWriterEffect(ardiMessage.id, responseText);
-          }, 50);
-        } else {
-          setIsTyping(false);
-          setIsResponding(false);
-          setCanSendMessage(true);
-        }
-      } catch (error) {
-        console.error('Error getting Ardi response:', error);
-        setIsTyping(false);
-        setIsResponding(false);
-        setCanSendMessage(true);
+    if (!existing) {
+      chatId = Date.now().toString();
+      newMessages = [userMessage];
+      const created: ChatData = {
+        id: chatId,
+        title,
+        messages: newMessages,
+        createdAt: new Date(),
+        isStarred: false
+      };
+      setChats(prev => [...prev, created]);
+      currentChatIdRef.current = chatId;
+      setInternalCurrentChatId(chatId);
+      window.dispatchEvent(new CustomEvent('new-chat-created', { detail: { chatId } }));
+    } else {
+      if (base.length === 0) {
+        updateChatTitle(chatId, title);
       }
-    };
+      updateCurrentChat(newMessages, chatId);
+    }
 
-    // Start the response process after a short delay
-    setTimeout(getResponse, 100);
+    messagesRef.current = newMessages;
+    setMessages(newMessages);
+    setInputMessage('');
+    queueAssistantReply(chatId, newMessages, text);
   };
 
   // Initialize displayed text for existing Ardi messages
@@ -1301,8 +1250,125 @@ export default function Chat({ onNewChat, onChatSelect, currentChatId }: ChatPro
     }
   }, [messages.length]);
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && canSendMessage && !isTyping && typingMessageId === null && !isResponding) {
+  const commandQuery = inputMessage.match(/^\/([^\s]*)$/)?.[1].toLowerCase() ?? null;
+  const matchingCommands = commandQuery === null
+    ? []
+    : CHAT_COMMANDS.filter(command => command.name.startsWith(commandQuery));
+  const showCommands = matchingCommands.length > 0;
+  const activeCommandIndex = matchingCommands.length === 0
+    ? 0
+    : commandIndex % matchingCommands.length;
+
+  const appendLocalNotice = (content: string, title = 'Commands') => {
+    const notice: Message = {
+      id: Date.now(),
+      sender: 'ardi',
+      content,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+    const existing = chats.find(chat => chat.id === internalCurrentChatId);
+    if (!existing) {
+      const chatId = Date.now().toString();
+      const created: ChatData = {
+        id: chatId,
+        title,
+        messages: [notice],
+        createdAt: new Date(),
+        isStarred: false
+      };
+      setChats(prev => [...prev, created]);
+      currentChatIdRef.current = chatId;
+      setInternalCurrentChatId(chatId);
+      messagesRef.current = [notice];
+      setMessages([notice]);
+      window.dispatchEvent(new CustomEvent('new-chat-created', { detail: { chatId } }));
+    } else {
+      const next = [...messagesRef.current, notice];
+      messagesRef.current = next;
+      setMessages(next);
+      updateCurrentChat(next, existing.id);
+    }
+    setDisplayedText(prev => ({ ...prev, [notice.id]: content }));
+    setInputMessage('');
+  };
+
+  const runCommand = (name: string) => {
+    if (name === 'help') {
+      appendLocalNotice(HELP_REPLY);
+      return;
+    }
+    if (name === 'stop') {
+      stopGeneration();
+      setInputMessage('');
+      return;
+    }
+    if (name === 'new') {
+      setShowQuestions(false);
+      createNewChat();
+      return;
+    }
+    if (name === 'questions') {
+      setInputMessage('');
+      setShowQuestions(true);
+      return;
+    }
+    if (name === 'retry') {
+      setInputMessage('');
+      const last = [...messagesRef.current].reverse().find(message => message.sender === 'ardi');
+      if (!last) {
+        if (messagesRef.current.length > 0) {
+          appendLocalNotice('There is no reply to retry.', 'Retry');
+        }
+        return;
+      }
+      handleRetryMessage(last.id);
+    }
+  };
+
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const isGenerating = isResponding || typingMessageId !== null;
+  const composerFilled = inputMessage.trim().length > 0;
+  const sendButtonPosition = composerFilled
+    ? 'top-1.5 translate-y-0'
+    : 'top-1/2 -translate-y-1/2';
+
+  const resizeComposer = (element: HTMLTextAreaElement) => {
+    element.style.height = 'auto';
+    element.style.height = `${Math.min(element.scrollHeight, 180)}px`;
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showCommands) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setCommandIndex(index => (index + 1) % matchingCommands.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setCommandIndex(index => (index - 1 + matchingCommands.length) % matchingCommands.length);
+        return;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const selected = matchingCommands[activeCommandIndex];
+        if (selected) setInputMessage(`/${selected.name}`);
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        const selected = matchingCommands[activeCommandIndex];
+        if (selected) runCommand(selected.name);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setInputMessage('');
+        return;
+      }
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
       if (showQuestions) {
         setShowQuestions(false);
         return;
@@ -1314,25 +1380,57 @@ export default function Chat({ onNewChat, onChatSelect, currentChatId }: ChatPro
     }
   };
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
+    resizeComposer(e.target);
     setInputMessage(value);
-    
-    // Check if user typed /Questions (case insensitive)
-    if (value.toLowerCase() === '/questions') {
-      setShowQuestions(true);
-    } else if (showQuestions && !value.toLowerCase().startsWith('/questions')) {
+    if (showQuestions && value.trim() !== '' && !value.toLowerCase().startsWith('/questions')) {
       setShowQuestions(false);
     }
   };
+
+  useEffect(() => {
+    setCommandIndex(0);
+  }, [commandQuery]);
 
   const handleQuestionSelect = (question: string) => {
     setInputMessage(question);
     setShowQuestions(false);
   };
 
+  useEffect(() => {
+    if (!composerRef.current) return;
+    if (!inputMessage) {
+      composerRef.current.style.height = 'auto';
+      return;
+    }
+    resizeComposer(composerRef.current);
+  }, [inputMessage]);
+
+  const commandMenu = showCommands ? (
+    <div className="mb-2 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-800">
+      {matchingCommands.map((command, index) => (
+        <button
+          key={command.name}
+          type="button"
+          onMouseDown={(event) => event.preventDefault()}
+          onMouseEnter={() => setCommandIndex(index)}
+          onClick={() => runCommand(command.name)}
+          className={`flex w-full items-baseline gap-3 px-3 py-2 text-left text-sm ${
+            index === activeCommandIndex
+              ? 'bg-gray-100 dark:bg-gray-700'
+              : 'hover:bg-gray-50 dark:hover:bg-gray-700/60'
+          }`}
+        >
+          <span className="font-medium text-gray-900 dark:text-white">/{command.name}</span>
+          <span className="text-gray-500 dark:text-gray-400">{command.description}</span>
+        </button>
+      ))}
+    </div>
+  ) : null;
+
   return (
-    <div className="flex-1 flex flex-col bg-gradient-to-br from-gray-50 to-white dark:from-gray-900 dark:to-gray-800 h-screen relative">
+    <div className="flex-1 flex flex-col bg-gradient-to-br from-gray-50 to-white dark:bg-gray-900 dark:from-gray-900 dark:to-gray-900 h-screen relative">
       
       {/* Floating Controls - Always visible */}
       <div className="absolute top-2 sm:top-4 right-2 sm:right-4 z-50 flex items-center space-x-1 sm:space-x-2 md:space-x-3">
@@ -1405,38 +1503,40 @@ export default function Chat({ onNewChat, onChatSelect, currentChatId }: ChatPro
 
             {/* Enhanced Input with better visibility */}
             <div className="max-w-4xl mx-auto px-2 sm:px-4">
-              <div className="relative bg-white dark:bg-gray-800 rounded-xl sm:rounded-2xl p-2 shadow-lg border border-gray-200 dark:border-gray-700">
+              {commandMenu}
+              <div className="relative bg-white dark:bg-gray-800 rounded-2xl px-2 py-1.5 shadow-lg border border-gray-200 dark:border-gray-700">
                 <button 
-                  className="absolute left-3 sm:left-5 md:left-6 top-1/2 transform -translate-y-1/2 p-2 sm:p-3 rounded-xl hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-200 hover:scale-105"
+                  className="absolute left-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
                   title="Attach file"
                 >
-                  <IoMdAttach className="w-5 h-5 sm:w-6 sm:h-6 md:w-7 md:h-7 text-gray-600 dark:text-gray-400" />
+                  <IoMdAttach className="w-4 h-4 text-gray-600 dark:text-gray-400" />
                 </button>
-                                  <input
-                    type="text"
+                                  <textarea
+                    ref={composerRef}
+                    rows={1}
                     value={inputMessage}
                     onChange={handleInputChange}
-                    onKeyPress={handleKeyPress}
-                    placeholder={!canSendMessage ? "Ardi is responding... (you can type but not send)" : isMobile ? "Message Ardi..." : "Message Ardi... (Type /Questions for suggestions)"}
-                    className="w-full pl-12 sm:pl-16 md:pl-20 pr-12 sm:pr-16 md:pr-20 py-5 sm:py-7 md:py-8 bg-transparent border-0 rounded-xl outline-none font-normal text-base sm:text-lg md:text-xl placeholder-gray-500 dark:placeholder-gray-400 text-gray-900 dark:text-white"
+                    onKeyDown={handleKeyDown}
+                    placeholder="Message Ardi... (Type / for commands)"
+                    className="w-full resize-none overflow-y-auto pl-8 pr-11 py-1.5 bg-transparent border-0 rounded-xl outline-none font-normal text-base placeholder-gray-500 dark:placeholder-gray-400 text-gray-900 dark:text-white"
                   />
-                                  <button 
-                    onClick={sendMessage}
-                    disabled={inputMessage.trim() === '' || !canSendMessage || isTyping || typingMessageId !== null || isResponding}
-                    className="absolute right-2 sm:right-3 md:right-4 top-1/2 transform -translate-y-1/2 p-2 sm:p-2.5 md:p-3 rounded-xl text-white transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed hover:scale-105 active:scale-95 bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 shadow-lg"
-                    style={{ display: (!canSendMessage || isTyping || typingMessageId !== null || isResponding) ? 'none' : 'block' }}
-                  >
-                    <IoMdSend className="w-4 h-4 sm:w-4 sm:h-4 md:w-5 md:h-5" />
-                  </button>
-                  {/* Stop Button */}
-                  {!canSendMessage && stopTyping && (
+                                  {isGenerating ? (
                     <button
-                      onClick={stopTyping}
-                      className="absolute right-2 sm:right-3 md:right-4 top-1/2 transform -translate-y-1/2 p-2 sm:p-2.5 md:p-3 rounded-xl text-white bg-red-500 hover:bg-red-600 transition-all duration-200 hover:scale-105 active:scale-95"
-                      style={{ zIndex: 10 }}
-                      title="Stop response (Ctrl+C or Esc)"
+                      type="button"
+                      onClick={() => stopGeneration()}
+                      className={`absolute right-1.5 ${sendButtonPosition} p-1.5 rounded-lg text-white bg-gray-900 hover:bg-black dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200 transition-all duration-300 ease-out`}
+                      title="Stop response"
                     >
-                      <IoStop className="w-4 h-4 sm:w-4 sm:h-4 md:w-5 md:h-5" />
+                      <IoStop className="w-4 h-4" />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={sendMessage}
+                      disabled={inputMessage.trim() === ''}
+                      className={`absolute right-2 ${sendButtonPosition} p-1 text-gray-800 dark:text-gray-100 transition-opacity duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-70`}
+                    >
+                      <IoMdSend className="w-5 h-5" />
                     </button>
                   )}
               </div>
@@ -1449,7 +1549,7 @@ export default function Chat({ onNewChat, onChatSelect, currentChatId }: ChatPro
           {/* Messages Container - Enhanced with better conversation management */}
           <div 
             ref={messagesContainerRef} 
-            className="flex-1 overflow-y-auto pb-24 sm:pb-32 px-2 sm:px-4 md:px-6 scroll-smooth" 
+            className="flex-1 overflow-y-auto pb-16 sm:pb-20 px-2 sm:px-4 md:px-6 scroll-smooth" 
           >
             <div className="max-w-5xl mx-auto w-full pt-4 sm:pt-8 pb-4 space-y-4 sm:space-y-8">
               <ChatMessages
@@ -1469,6 +1569,7 @@ export default function Chat({ onNewChat, onChatSelect, currentChatId }: ChatPro
           <div className="absolute bottom-2 sm:bottom-4 md:bottom-6 left-2 right-2 sm:left-4 sm:right-4 md:left-6 md:right-6 z-20">
             <div className="max-w-4xl mx-auto">
               {/* Questions Dropdown */}
+              {commandMenu}
               {showQuestions && (
                 <div className="bg-white dark:bg-gray-800 rounded-xl sm:rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 mb-2 sm:mb-4 max-h-60 sm:max-h-80 overflow-y-auto">
                   <div className="p-3 sm:p-4 border-b border-gray-200 dark:border-gray-700">
@@ -1489,38 +1590,40 @@ export default function Chat({ onNewChat, onChatSelect, currentChatId }: ChatPro
                 </div>
               )}
               
-              <div className="bg-white dark:bg-gray-800 rounded-2xl sm:rounded-3xl shadow-lg border border-gray-200 dark:border-gray-700">
-                <div className="flex items-center px-3 py-3 sm:px-6 sm:py-6">
+              <div className="relative bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-200 dark:border-gray-700">
+                <div className="relative px-2 py-1.5">
                   <button 
-                    className="flex-shrink-0 p-2 sm:p-3 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-200"
+                    className="absolute left-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
                     title="Attach file"
                   >
-                    <IoMdAttach className="w-5 h-5 sm:w-6 sm:h-6 text-gray-500 dark:text-gray-400" />
+                    <IoMdAttach className="w-4 h-4 text-gray-500 dark:text-gray-400" />
                   </button>
-                  <input
-                    type="text"
+                  <textarea
+                    ref={composerRef}
+                    rows={1}
                     value={inputMessage}
                     onChange={handleInputChange}
-                    onKeyPress={handleKeyPress}
-                    placeholder={!canSendMessage ? "Ardi is responding..." : isMobile ? "Message Ardi..." : "Message Ardi... (Type /Questions for suggestions)"}
-                    className="flex-1 mx-2 sm:mx-4 py-2 sm:py-4 bg-transparent border-none outline-none text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 text-base sm:text-lg"
+                    onKeyDown={handleKeyDown}
+                    placeholder="Message Ardi... (Type / for commands)"
+                    className="w-full resize-none overflow-y-auto bg-transparent border-none outline-none pl-8 pr-11 py-1.5 text-base text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
                   />
-                  <button 
-                    onClick={sendMessage}
-                    disabled={inputMessage.trim() === '' || !canSendMessage || isTyping || typingMessageId !== null || isResponding}
-                    className="flex-shrink-0 p-2 sm:p-3 rounded-full transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed hover:scale-105 active:scale-95 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600"
-                    style={{ display: (!canSendMessage || isTyping || typingMessageId !== null || isResponding) ? 'none' : 'flex' }}
-                  >
-                    <IoMdSend className="w-5 h-5 sm:w-6 sm:h-6 text-gray-700 dark:text-gray-300" />
-                  </button>
-                  {/* Stop Button */}
-                  {!canSendMessage && stopTyping && (
+                  {isGenerating ? (
                     <button
-                      onClick={stopTyping}
-                      className="flex-shrink-0 p-2 sm:p-3 rounded-full text-white bg-red-500 hover:bg-red-600 transition-all duration-200 hover:scale-105 active:scale-95"
-                      title="Stop response (Ctrl+C or Esc)"
+                      type="button"
+                      onClick={() => stopGeneration()}
+                      className={`absolute right-1.5 ${sendButtonPosition} p-1.5 rounded-lg text-white bg-gray-900 hover:bg-black dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200 transition-all duration-300 ease-out`}
+                      title="Stop response"
                     >
-                      <IoStop className="w-5 h-5 sm:w-6 sm:h-6" />
+                      <IoStop className="w-4 h-4" />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={sendMessage}
+                      disabled={inputMessage.trim() === ''}
+                      className={`absolute right-2 ${sendButtonPosition} p-1 text-gray-800 dark:text-gray-100 transition-opacity duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-70`}
+                    >
+                      <IoMdSend className="w-5 h-5" />
                     </button>
                   )}
                 </div>

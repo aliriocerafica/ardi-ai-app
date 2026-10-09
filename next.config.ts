@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Configuration for Next.js
+  serverExternalPackages: ["@prisma/client", "@prisma/adapter-neon"],
 };
 
 export default nextConfig;

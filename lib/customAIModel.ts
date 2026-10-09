@@ -4,6 +4,7 @@
 export interface AIModelConfig {
   temperature?: number;
   maxTokens?: number;
+  history?: { role: 'user' | 'assistant'; content: string }[];
   context?: {
     role: string;
     company: string;
@@ -67,79 +68,87 @@ export class CustomAIModelImplementation implements CustomAIModel {
   }
 
   async generateResponse(message: string, config?: AIModelConfig): Promise<AIResponse> {
-    // TODO: Replace this with your actual AI model API call
-    
     const finalConfig = { ...this.config, ...config };
-    
-    try {
-      // Example structure - replace with your AI model's API
-      /*
-      const response = await fetch(finalConfig.endpoint || 'YOUR_AI_MODEL_ENDPOINT', {
+    const apiKey = getGeminiApiKey();
+    if (!apiKey) {
+      throw new Error('GEMINI_API_KEY is not set');
+    }
+
+    const started = Date.now();
+    const model = process.env.GEMINI_MODEL?.trim() || 'gemini-3.8-flash';
+    const history = (finalConfig.history || []).slice(-8).map(turn => ({
+      role: turn.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: turn.content.slice(0, 2000) }]
+    }));
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${finalConfig.apiKey}`,
+          'x-goog-api-key': apiKey
         },
         body: JSON.stringify({
-          prompt: this.buildPrompt(message, finalConfig),
-          temperature: finalConfig.temperature,
-          max_tokens: finalConfig.maxTokens,
-          // Add other model-specific parameters
+          systemInstruction: {
+            parts: [{ text: this.buildPrompt(message, finalConfig) }]
+          },
+          contents: [
+            ...history,
+            { role: 'user', parts: [{ text: message }] }
+          ],
+          generationConfig: {
+            temperature: finalConfig.temperature ?? 0.7,
+            maxOutputTokens: finalConfig.maxTokens ?? 1000
+          }
         }),
-      });
+        signal: AbortSignal.timeout(20000)
+      }
+    );
 
-      const result = await response.json();
-      
-      return {
-        content: result.choices[0].text || result.content,
-        confidence: result.confidence || 0.8,
-        tokensUsed: result.usage?.total_tokens || 0,
-        processingTime: result.processingTime || 0,
-        category: this.categorizeResponse(message),
-        metadata: result.metadata || {}
-      };
-      */
-
-      // Placeholder response - remove when implementing your AI model
-      return {
-        content: `This is a placeholder response for: "${message}". Please implement your custom AI model in the generateResponse method.`,
-        confidence: 0.5,
-        tokensUsed: 0,
-        processingTime: 100,
-        category: 'placeholder',
-        metadata: { placeholder: true }
-      };
-
-    } catch (error) {
-      console.error('AI Model Error:', error);
-      throw new Error(`Failed to generate AI response: ${error}`);
+    if (!response.ok) {
+      console.error('Gemini request failed', response.status);
+      throw new Error(`Gemini request failed (${response.status})`);
     }
+
+    const result = await response.json();
+    const content = result?.candidates?.[0]?.content?.parts
+      ?.map((part: { text?: string }) => part.text || '')
+      .join('')
+      .trim();
+
+    if (!content) {
+      throw new Error('Gemini returned an empty response');
+    }
+
+    return {
+      content,
+      confidence: 0.8,
+      tokensUsed: result?.usageMetadata?.totalTokenCount || 0,
+      processingTime: Date.now() - started,
+      category: this.categorizeResponse(message),
+      metadata: { model }
+    };
   }
 
   isAvailable(): boolean {
-    // TODO: Implement availability check for your AI model
-    return false; // Set to true when your model is integrated
+    return getGeminiApiKey() !== null;
   }
 
   getModelInfo() {
     return {
-      name: 'Your Custom AI Model',
-      version: '1.0.0',
+      name: 'Google Gemini',
+      version: process.env.GEMINI_MODEL?.trim() || 'gemini-3.8-flash',
       capabilities: this.config.context?.capabilities || []
     };
   }
 
-  private buildPrompt(message: string, config: AIModelConfig): string {
-    // TODO: Customize this prompt template for your use case
-    return `
-You are ${config.context?.role || 'an AI assistant'} for ${config.context?.company || 'a company'}.
-
-Your capabilities include:
-${config.context?.capabilities?.map(cap => `- ${cap.replace('_', ' ')}`).join('\n') || '- General assistance'}
-
-User message: ${message}
-
-Please provide a helpful, professional response:`;
+  private buildPrompt(_message: string, config: AIModelConfig): string {
+    return `You are Ardi, the assistant for ${config.context?.company || 'Ardent Paralegal Business Solutions'}.
+Answer the user's latest message directly and conversationally.
+Use earlier messages in the chat as context for follow-ups like "yeah", "for example", or "what about".
+When the question is about Ardent policy, training length, or an internal procedure and you were not given that fact, say you don't have that company detail instead of inventing it.
+For general questions, answer from general knowledge in a few short paragraphs or a short list.`;
   }
 
   private categorizeResponse(message: string): string {
@@ -158,6 +167,15 @@ Please provide a helpful, professional response:`;
     
     return 'General';
   }
+}
+
+function getGeminiApiKey(): string | null {
+  if (typeof window !== 'undefined') return null;
+  if (process.env.NEXT_PUBLIC_GEMINI_API_KEY) return null;
+
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key || key === 'your_api_key_here' || key.startsWith('your_')) return null;
+  return key;
 }
 
 // Export singleton instance
