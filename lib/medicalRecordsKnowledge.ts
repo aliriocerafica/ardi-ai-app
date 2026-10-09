@@ -1,5 +1,6 @@
 // Medical Records Handling Knowledge
 // Classification: Internal-Only
+import { containsPhrase } from './matchPhrase';
 
 export interface MedicalRecordsKnowledgeEntry {
   id: string;
@@ -1275,7 +1276,7 @@ export function findMedicalRecordsKnowledge(userMessage: string): MedicalRecords
   
   for (const entry of medicalRecordsKnowledge) {
     for (const trigger of entry.triggers) {
-      if (message.includes(trigger.toLowerCase())) {
+      if (containsPhrase(message, trigger)) {
         return entry;
       }
     }

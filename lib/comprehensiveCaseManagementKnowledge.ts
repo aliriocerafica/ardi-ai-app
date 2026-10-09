@@ -1,5 +1,6 @@
 // Comprehensive Case Management Knowledge
 // Classification: Internal-Only
+import { containsPhrase } from './matchPhrase';
 
 export interface ComprehensiveKnowledgeEntry {
   id: string;
@@ -276,7 +277,7 @@ export function findComprehensiveCaseManagementKnowledge(userMessage: string): C
   
   for (const entry of comprehensiveCaseManagementKnowledge) {
     for (const trigger of entry.triggers) {
-      if (message.includes(trigger.toLowerCase())) {
+      if (containsPhrase(message, trigger)) {
         return entry;
       }
     }

@@ -30,7 +30,12 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const tailored = buildReply(message, history);
+    let tailored: ReturnType<typeof buildReply> = null;
+    try {
+      tailored = buildReply(message, history);
+    } catch (knowledgeError) {
+      console.error('Knowledge lookup failed:', knowledgeError);
+    }
     if (tailored) {
       return NextResponse.json({
         response: tailored.response,
@@ -45,8 +50,7 @@ export async function POST(request: NextRequest) {
     if (isCustomAIModelReady()) {
       try {
         const aiResponse = await customAIModel.generateResponse(message, {
-          temperature: 0.7,
-          maxTokens: 1000,
+          maxTokens: 2048,
           history
         });
         

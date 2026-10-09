@@ -1,5 +1,6 @@
 // IT Department Basic Troubleshooting Guide Knowledge
 // Classification: Internal-Only
+import { containsPhrase } from './matchPhrase';
 
 export interface ITTroubleshootingEntry {
   id: string;
@@ -650,7 +651,7 @@ export function findITTroubleshootingKnowledge(userMessage: string): ITTroublesh
   
   for (const entry of itTroubleshootingKnowledge) {
     for (const trigger of entry.triggers) {
-      if (message.includes(trigger.toLowerCase())) {
+      if (containsPhrase(message, trigger)) {
         return entry;
       }
     }

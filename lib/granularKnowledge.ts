@@ -27,8 +27,8 @@ export const granularKnowledge: GranularKnowledgeEntry[] = [
     question: 'What is a lien?',
     shortAnswer: '💰 **A lien** is a legal claim against your personal injury settlement or judgment. Common types include medical liens (healthcare providers), attorney liens (your lawyer), and insurance liens (your insurance company seeking reimbursement). Liens must be paid from your settlement before you receive your portion.',
     category: 'Legal Terms',
-    triggers: ['lien', 'what is a lien', 'what is lien', 'lien definition', 'define lien', 'medical lien'],
-    exactMatches: ['lien', 'what is a lien'],
+    triggers: ['lien', 'liens', 'lein', 'what is a lien', 'what is lien', 'lien definition', 'define lien', 'medical lien'],
+    exactMatches: ['lien', 'liens', 'lein', 'what is a lien'],
     relatedTerms: ['medical lien', 'attorney lien', 'insurance lien', 'settlement', 'reimbursement'],
     priority: 'high'
   },
@@ -37,8 +37,8 @@ export const granularKnowledge: GranularKnowledgeEntry[] = [
     question: 'What is a lien negotiator?',
     shortAnswer: '💼 **A lien negotiator** reduces medical liens and outstanding medical bills in a personal injury case. They negotiate with healthcare providers, hospitals, and insurance companies to lower the amount owed, so the client keeps more of the settlement.',
     category: 'Legal Terms',
-    triggers: ['what is a lien negotiator', 'lien negotiator', 'lien negotaitor', 'lien negotiater', 'lien nego', 'what is a lien nego', 'lien negotiation', 'what is lien negotiation'],
-    exactMatches: ['lien negotiator', 'lien nego', 'lien negotiation'],
+    triggers: ['what is a lien negotiator', 'lien negotiator', 'lien negotaitor', 'lien negotiater', 'lien nego', 'what is a lien nego', 'lien negotiation', 'what is lien negotiation', 'nego', 'negotiator', 'what is nego', 'what is a nego'],
+    exactMatches: ['lien negotiator', 'lien nego', 'lien negotiation', 'nego', 'negotiator'],
     relatedTerms: ['lien reduction', 'medical bill negotiation'],
     priority: 'high'
   },
@@ -152,6 +152,29 @@ export const granularKnowledge: GranularKnowledgeEntry[] = [
     triggers: ['who are the founders', 'ardent founders', 'who founded ardent', 'iran salvado', 'dominic narag', 'who started ardent'],
     exactMatches: ['who are the founders', 'ardent founders'],
     relatedTerms: ['founders', 'iran salvado', 'dominic narag', 'leadership', 'company owners'],
+    priority: 'high'
+  },
+  {
+    id: 'ardent-clients',
+    question: 'Who are Ardent Paralegal clients?',
+    shortAnswer: '🤝 **Ardent’s clients are law firms and legal departments.** We provide paralegal, administrative, and business-process support so those legal teams can focus on legal work. The company started with one client and now serves multiple clients across legal specialties.',
+    category: 'Company Overview',
+    triggers: [
+      'ardent paralegal clients',
+      'ardent clients',
+      "ardent's clients",
+      'who are ardent clients',
+      'who does ardent serve',
+      'who does ardent work for',
+      'ardent customers'
+    ],
+    exactMatches: [
+      'ardent clients',
+      'ardent paralegal clients',
+      'what is ardent paralegal clients',
+      'who are ardent clients'
+    ],
+    relatedTerms: ['law firms', 'legal departments'],
     priority: 'high'
   },
 
@@ -480,9 +503,18 @@ export const granularKnowledge: GranularKnowledgeEntry[] = [
   }
 ];
 
+function matchesPhrase(haystack: string, needle: string): boolean {
+  const phrase = needle.toLowerCase().trim();
+  if (!phrase) return false;
+  const text = haystack.toLowerCase();
+  if (/\s/.test(phrase)) return text.includes(phrase);
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}\\b`).test(text);
+}
+
 // Function to find granular knowledge with exact matching
 export function findGranularKnowledge(userMessage: string): GranularKnowledgeEntry | null {
-  const normalizedMessage = userMessage.toLowerCase().trim();
+  const normalizedMessage = userMessage.toLowerCase().trim().replace(/[?.!]+$/g, '').trim();
   
   // First, try exact matches for highest accuracy
   for (const entry of granularKnowledge) {
@@ -502,11 +534,7 @@ export function findGranularKnowledge(userMessage: string): GranularKnowledgeEnt
   
   for (const entry of sortedEntries) {
     for (const trigger of entry.triggers) {
-      const needle = trigger.toLowerCase();
-      const matched = needle.length <= 3
-        ? new RegExp(`\\b${needle}\\b`).test(normalizedMessage)
-        : normalizedMessage.includes(needle);
-      if (!matched) continue;
+      if (!matchesPhrase(normalizedMessage, trigger)) continue;
       if (entry.id === 'lien-definition' && /\bnego/.test(normalizedMessage)) continue;
       return entry;
     }
@@ -515,7 +543,7 @@ export function findGranularKnowledge(userMessage: string): GranularKnowledgeEnt
   // Finally, try related terms matching
   for (const entry of granularKnowledge) {
     for (const term of entry.relatedTerms) {
-      if (normalizedMessage.includes(term.toLowerCase())) {
+      if (matchesPhrase(normalizedMessage, term)) {
         return entry;
       }
     }

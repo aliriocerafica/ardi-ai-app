@@ -1,4 +1,6 @@
 import { findKnowledge, type ConversationTurn, type KnowledgeResult } from './knowledgeIndex';
+import { isStandaloneGreeting } from './matchPhrase';
+import { timeAwareGreeting } from './chatGreeting';
 
 type QuestionIntent = 'duration' | 'list' | 'procedure' | 'detail' | 'definition';
 
@@ -170,7 +172,73 @@ function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+function splitCompareTerms(text: string): string[] {
+  return text
+    .split(/\b(?:vs\.?|versus|compared to|or|o)\b/i)
+    .map(part => part.trim().replace(/^(a|an|the)\s+/i, '').replace(/[?!.]+$/g, '').trim())
+    .filter(part => part.length > 1);
+}
+
+function comparisonParts(question: string): string[] | null {
+  const cleaned = question.replace(/[?!.]+$/g, '').trim();
+  const between = cleaned.match(/\b(?:difference between|compare)\s+(.+)/i);
+  if (between) {
+    const sides = splitCompareTerms(between[1].replace(/\band\b/i, ' or '));
+    if (sides.length >= 2) return sides;
+  }
+  if (!/\b(?:vs\.?|versus|compared to)\b/i.test(cleaned)) return null;
+  const stripped = cleaned.replace(/^(what is|what are|what's|whats|explain|define|tell me about|how is)\s+/i, '');
+  const sides = splitCompareTerms(stripped);
+  return sides.length >= 2 ? sides : null;
+}
+
+function comparisonLabel(term: string, result: KnowledgeResult): string {
+  if (/^nego/i.test(term) && /lien negotiator/i.test(result.content)) return 'Lien negotiator';
+  return capitalize(term);
+}
+
+function firstDefinition(content: string): string {
+  const prose = content
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
+    .split('\n')
+    .filter(line => !/^\s*#{1,6}\s/.test(line))
+    .join('\n');
+  const sentences = sentencesOf(prose).filter(sentence => !isQuestionLike(sentence));
+  return sentences[0] || plain(prose).slice(0, 220);
+}
+
+function composeComparisonSide(term: string, result: KnowledgeResult): string {
+  return `**${comparisonLabel(term, result)}** — ${firstDefinition(result.content)}`;
+}
+
+function composeComparison(parts: string[]): TailoredReply | null {
+  const items = parts.flatMap(part => {
+    const result = findKnowledge(`what is ${part}`);
+    if (!result) return [];
+    return [{ part, result, text: composeComparisonSide(part, result) }];
+  });
+  if (items.length === 0) return null;
+
+  const missing = parts.filter(part =>
+    !items.some(item => item.part.toLowerCase() === part.toLowerCase())
+  );
+  const contrast = items.length > 1
+    ? `They are different things: ${items.map(item => `**${comparisonLabel(item.part, item.result)}**`).join(', ')}.`
+    : '';
+  const unmatched = missing.length
+    ? `I don't have a stored definition for ${missing.map(part => `"${part}"`).join(' or ')}.`
+    : '';
+
+  return {
+    response: [items.map(item => item.text).join('\n\n'), contrast, unmatched].filter(Boolean).join('\n\n'),
+    source: items.length > 1 ? 'Knowledge' : items[0].result.source,
+    category: items[0].result.category
+  };
+}
+
 function splitQuestion(question: string): string[] {
+  const compared = comparisonParts(question);
+  if (compared) return compared.map(part => `what is ${part}`);
   const words = question.trim().split(/\s+/);
   if (words.length < 10 || !/,|\band\b/i.test(question)) return [question];
   const parts = question
@@ -180,14 +248,16 @@ function splitQuestion(question: string): string[] {
   return parts.length > 1 ? parts : [question];
 }
 
-type Cue = 'yes' | 'no' | 'thanks' | 'example' | 'when';
+type Cue = 'yes' | 'ack' | 'no' | 'thanks' | 'example' | 'when' | 'why';
 
 function conversationCue(message: string): Cue | null {
   const text = message.trim().toLowerCase().replace(/[!?.]+/g, '').trim();
   if (/^(thanks|thank you|ty|thx)$/.test(text)) return 'thanks';
   if (/^(no|nope|nah|not really)$/.test(text)) return 'no';
+  if (/^(why|why though|why is that|whys that|why's that|how come)$/.test(text)) return 'why';
   if (/^(since when|from when|how long ago|when|since|when was that|when was this|when did that start|when did this start|when did it start)$/.test(text)) return 'when';
-  if (/^(yeah|yea|yep|yes|ok|okay|k|sure|right|got it|cool|nice|good|great|makes sense|i see|alright|exactly|true|interesting|uh huh|mhm)$/.test(text)) return 'yes';
+  if (/^(yeah|yea|yep|yes|sure)$/.test(text)) return 'yes';
+  if (/^(ok|okay|k|right|got it|cool|nice|good|great|makes sense|i see|alright|exactly|true|interesting|uh huh|mhm)$/.test(text)) return 'ack';
   if (/\b(for example|do what|like what|such as|an example|give an example)\b/i.test(message)) return 'example';
   return null;
 }
@@ -231,9 +301,17 @@ function joinActions(lines: string[]): string {
   return `${actions.slice(0, -1).join(', ')}, and ${actions[actions.length - 1]}`;
 }
 
+function isQuestionLike(text: string): boolean {
+  const cleaned = plain(text);
+  return /^(what|how|why|when|where|who|which)\b/i.test(cleaned) || /\?\s*$/.test(cleaned);
+}
+
 function spokenExample(content: string, previousAnswer: string): string {
   const alreadySaid = plain(previousAnswer).toLowerCase();
-  const fresh = actionLines(content).filter(line => !alreadySaid.includes(line.toLowerCase().slice(0, 36)));
+  const fresh = actionLines(content).filter(line => {
+    if (isQuestionLike(line)) return false;
+    return !alreadySaid.includes(line.toLowerCase().slice(0, 36));
+  });
   if (fresh.length >= 2) {
     return `that looks like ${joinActions(fresh.slice(0, 3))}.`;
   }
@@ -241,10 +319,20 @@ function spokenExample(content: string, previousAnswer: string): string {
     .split('\n')
     .filter(line => !/^\s*#{1,6}\s/.test(line))
     .join('\n');
-  const extra = sentencesOf(prose).filter(sentence => !alreadySaid.includes(plain(sentence).toLowerCase().slice(0, 36)));
+  const extra = sentencesOf(prose).filter(sentence => {
+    if (isQuestionLike(sentence)) return false;
+    return !alreadySaid.includes(plain(sentence).toLowerCase().slice(0, 36));
+  });
   if (!extra.length) return '';
   const sentence = extra[0];
   return sentence.charAt(0).toLowerCase() + sentence.slice(1);
+}
+
+function lastRealUserTopic(history: ConversationTurn[]): string {
+  return [...history].reverse().find(turn => {
+    if (turn.role !== 'user' || !turn.content.trim()) return false;
+    return conversationCue(turn.content) === null;
+  })?.content.trim() ?? '';
 }
 
 function continueConversation(message: string, history: ConversationTurn[]): TailoredReply | null {
@@ -253,10 +341,11 @@ function continueConversation(message: string, history: ConversationTurn[]): Tai
 
   const previousUser = lastTurn(history, 'user');
   const previousAnswer = lastTurn(history, 'assistant');
+  const topic = lastRealUserTopic(history) || previousUser;
 
   if (cue === 'when') {
-    if (!previousAnswer && !previousUser) return null;
-    const detailed = previousUser ? findKnowledge(previousUser, history) : null;
+    if (!previousAnswer && !topic) return null;
+    const detailed = topic ? findKnowledge(topic, history) : null;
     const blob = `${previousAnswer}\n${detailed?.content || ''}`;
     const date = statedDate(blob);
     if (date) {
@@ -267,7 +356,7 @@ function continueConversation(message: string, history: ConversationTurn[]): Tai
       };
     }
     const time = durationPhrase(blob);
-    if (time && previousUser && /\b(how long|training|probation|period|duration)\b/i.test(`${previousUser} ${previousAnswer}`)) {
+    if (time && topic && /\b(how long|training|probation|period|duration)\b/i.test(`${topic} ${previousAnswer}`)) {
       return {
         response: `That's **${time}**.`,
         source: detailed?.source || 'Conversation',
@@ -285,32 +374,50 @@ function continueConversation(message: string, history: ConversationTurn[]): Tai
     };
   }
 
-  if (cue === 'thanks') {
+  if (cue === 'thanks' || cue === 'ack') {
     return {
-      response: "You're welcome. I can give an example or go into the next step if you want.",
+      response: topic
+        ? `Got it. Want an example, the next step, or a different part of "${plain(topic)}"?`
+        : 'Got it. What should I cover next?',
       source: 'Conversation',
       category: 'Chat'
     };
   }
 
+  if (cue === 'why') {
+    if (!topic) {
+      return {
+        response: 'Which part do you want the reason for?',
+        source: 'Conversation',
+        category: 'Chat'
+      };
+    }
+    const detailed = findKnowledge(topic, history);
+    const reasons = detailed
+      ? sentencesOf(detailed.content).filter(sentence =>
+          /\b(because|ensures|so that|important|protects|prevents|helps keep|avoids)\b/i.test(sentence)
+        )
+      : [];
+    if (!reasons.length) return null;
+    return {
+      response: reasons.slice(0, 2).join(' '),
+      source: detailed?.source || 'Conversation',
+      category: detailed?.category || 'Chat'
+    };
+  }
+
   if (cue === 'no') {
     return {
-      response: previousUser
-        ? `Got it. We can leave that there. What part of "${plain(previousUser)}" should I cover instead?`
+      response: topic
+        ? `Got it. We can leave that there. What part of "${plain(topic)}" should I cover instead?`
         : 'Got it. What should I cover instead?',
       source: 'Conversation',
       category: 'Chat'
     };
   }
 
-  const topic = cue === 'yes'
-    ? ([...history].reverse().find(turn => {
-        if (turn.role !== 'user' || !turn.content.trim()) return false;
-        const earlier = conversationCue(turn.content);
-        return earlier !== 'yes' && earlier !== 'no' && earlier !== 'thanks' && earlier !== 'when';
-      })?.content.trim() ?? '')
-    : message;
-  if (!topic) {
+  const exampleTopic = cue === 'yes' ? topic : message;
+  if (!exampleTopic) {
     return {
       response: 'Yeah. What do you want to go into?',
       source: 'Conversation',
@@ -318,7 +425,17 @@ function continueConversation(message: string, history: ConversationTurn[]): Tai
     };
   }
 
-  const detailed = findKnowledge(`${topic} explain the process`, history);
+  if (cue === 'yes' && /\bfor example\b/i.test(previousAnswer)) {
+    return {
+      response: topic
+        ? `I can keep going. Want the next step of "${plain(topic)}", or a different part?`
+        : 'Want the next step, or a different part?',
+      source: 'Conversation',
+      category: 'Chat'
+    };
+  }
+
+  const detailed = findKnowledge(`${exampleTopic} explain the process`, history);
   const example = detailed ? spokenExample(detailed.content, previousAnswer) : '';
   if (!example) {
     return {
@@ -339,8 +456,22 @@ function continueConversation(message: string, history: ConversationTurn[]): Tai
 }
 
 export function buildReply(message: string, history: ConversationTurn[] = []): TailoredReply | null {
+  if (isStandaloneGreeting(message)) {
+    return {
+      response: timeAwareGreeting(),
+      source: 'Conversation',
+      category: 'Chat'
+    };
+  }
+
   const conversational = continueConversation(message, history);
   if (conversational) return conversational;
+
+  const compared = comparisonParts(message);
+  if (compared) {
+    const comparison = composeComparison(compared);
+    if (comparison) return comparison;
+  }
 
   const parts = splitQuestion(message);
   const answers: string[] = [];

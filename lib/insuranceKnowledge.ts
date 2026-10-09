@@ -1,4 +1,5 @@
 // Insurance Domain Knowledge
+import { containsPhrase } from './matchPhrase';
 export interface InsuranceKnowledgeEntry {
   id: string;
   category: string;
@@ -245,7 +246,7 @@ export function findInsuranceKnowledge(userMessage: string): InsuranceKnowledgeE
   
   for (const entry of insuranceKnowledge) {
     for (const trigger of entry.triggers) {
-      if (message.includes(trigger.toLowerCase())) {
+      if (containsPhrase(message, trigger)) {
         return entry;
       }
     }

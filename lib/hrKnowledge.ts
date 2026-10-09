@@ -1,3 +1,5 @@
+import { containsPhrase } from './matchPhrase';
+
 export interface HRKnowledgeEntry {
   id: string;
   title: string;
@@ -240,7 +242,7 @@ export function findHRKnowledge(userMessage: string): HRKnowledgeEntry | null {
 
   for (const entry of hrKnowledge) {
     for (const trigger of entry.triggers) {
-      if (message.includes(trigger.toLowerCase())) {
+      if (containsPhrase(message, trigger)) {
         return entry;
       }
     }

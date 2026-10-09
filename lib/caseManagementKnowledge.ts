@@ -1,4 +1,5 @@
 // Case Management Domain Knowledge
+import { containsPhrase } from './matchPhrase';
 export interface CaseManagementKnowledgeEntry {
   id: string;
   category: string;
@@ -493,7 +494,7 @@ export function findCaseManagementKnowledge(userMessage: string): CaseManagement
   
   for (const entry of caseManagementKnowledge) {
     for (const trigger of entry.triggers) {
-      if (message.includes(trigger.toLowerCase())) {
+      if (containsPhrase(message, trigger)) {
         return entry;
       }
     }

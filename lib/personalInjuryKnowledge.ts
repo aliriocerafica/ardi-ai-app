@@ -1,4 +1,5 @@
 // Personal Injury Domain Knowledge
+import { containsPhrase } from './matchPhrase';
 export interface PersonalInjuryKnowledgeEntry {
   id: string;
   category: string;
@@ -187,7 +188,7 @@ export function findPersonalInjuryKnowledge(userMessage: string): PersonalInjury
   
   for (const entry of personalInjuryKnowledge) {
     for (const trigger of entry.triggers) {
-      if (message.includes(trigger.toLowerCase())) {
+      if (containsPhrase(message, trigger)) {
         return entry;
       }
     }

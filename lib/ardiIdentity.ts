@@ -1,4 +1,5 @@
 // Ardi Identity and Capabilities Knowledge
+import { containsPhrase, isStandaloneGreeting } from './matchPhrase';
 export interface IdentityKnowledgeEntry {
   id: string;
   title: string;
@@ -291,14 +292,19 @@ Ready to get started? Just ask me anything!`
 
 export function findIdentityKnowledge(userMessage: string): IdentityKnowledgeEntry | null {
   const message = userMessage.toLowerCase();
-  
-  for (const entry of ardiIdentityKnowledge) {
+  const ranked = [...ardiIdentityKnowledge].sort((left, right) => {
+    const longest = (entry: IdentityKnowledgeEntry) => Math.max(...entry.triggers.map(trigger => trigger.length));
+    return longest(right) - longest(left);
+  });
+
+  for (const entry of ranked) {
+    if (entry.id === 'ardi-greetings-casual' && !isStandaloneGreeting(userMessage)) continue;
     for (const trigger of entry.triggers) {
-      if (message.includes(trigger.toLowerCase())) {
+      if (containsPhrase(message, trigger)) {
         return entry;
       }
     }
   }
-  
+
   return null;
 } 

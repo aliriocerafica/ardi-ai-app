@@ -37,9 +37,13 @@ export interface CustomAIModel {
 /**
  * Default configuration for your AI model
  */
+const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
+const FALLBACK_GEMINI_MODELS = ['gemini-3.6-flash'];
+const TRANSIENT_GEMINI_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+
 export const DEFAULT_AI_CONFIG: AIModelConfig = {
   temperature: 0.7,
-  maxTokens: 1000,
+  maxTokens: 2048,
   context: {
     role: 'legal_assistant',
     company: 'Ardent Paralegal Business Solutions',
@@ -75,60 +79,68 @@ export class CustomAIModelImplementation implements CustomAIModel {
     }
 
     const started = Date.now();
-    const model = process.env.GEMINI_MODEL?.trim() || 'gemini-3.8-flash';
     const history = (finalConfig.history || []).slice(-8).map(turn => ({
       role: turn.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: turn.content.slice(0, 2000) }]
     }));
-
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey
-        },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: this.buildPrompt(message, finalConfig) }]
-          },
-          contents: [
-            ...history,
-            { role: 'user', parts: [{ text: message }] }
-          ],
-          generationConfig: {
-            temperature: finalConfig.temperature ?? 0.7,
-            maxOutputTokens: finalConfig.maxTokens ?? 1000
-          }
-        }),
-        signal: AbortSignal.timeout(20000)
+    const payload = {
+      systemInstruction: {
+        parts: [{ text: this.buildPrompt(message, finalConfig) }]
+      },
+      contents: [
+        ...history,
+        { role: 'user', parts: [{ text: message }] }
+      ],
+      generationConfig: {
+        maxOutputTokens: Math.max(finalConfig.maxTokens ?? 2048, 2048),
+        thinkingConfig: {
+          thinkingLevel: 'low'
+        }
       }
-    );
-
-    if (!response.ok) {
-      console.error('Gemini request failed', response.status);
-      throw new Error(`Gemini request failed (${response.status})`);
-    }
-
-    const result = await response.json();
-    const content = result?.candidates?.[0]?.content?.parts
-      ?.map((part: { text?: string }) => part.text || '')
-      .join('')
-      .trim();
-
-    if (!content) {
-      throw new Error('Gemini returned an empty response');
-    }
-
-    return {
-      content,
-      confidence: 0.8,
-      tokensUsed: result?.usageMetadata?.totalTokenCount || 0,
-      processingTime: Date.now() - started,
-      category: this.categorizeResponse(message),
-      metadata: { model }
     };
+
+    let lastError: Error | null = null;
+    for (const model of geminiModelCandidates()) {
+      let response: Response;
+      try {
+        response = await requestGemini(apiKey, model, payload);
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error('Gemini request failed');
+        console.warn(`Gemini ${model} failed:`, lastError.message);
+        continue;
+      }
+      if (!response.ok) {
+        const detail = (await response.text()).slice(0, 500);
+        console.error('Gemini request failed', response.status, detail);
+        lastError = new Error(`Gemini request failed (${response.status})`);
+        if (!TRANSIENT_GEMINI_STATUS.has(response.status)) {
+          throw lastError;
+        }
+        continue;
+      }
+
+      const result = await response.json();
+      const content = result?.candidates?.[0]?.content?.parts
+        ?.map((part: { text?: string }) => part.text || '')
+        .join('')
+        .trim();
+
+      if (!content) {
+        lastError = new Error('Gemini returned an empty response');
+        continue;
+      }
+
+      return {
+        content,
+        confidence: 0.8,
+        tokensUsed: result?.usageMetadata?.totalTokenCount || 0,
+        processingTime: Date.now() - started,
+        category: this.categorizeResponse(message),
+        metadata: { model }
+      };
+    }
+
+    throw lastError || new Error('Gemini request failed');
   }
 
   isAvailable(): boolean {
@@ -138,7 +150,7 @@ export class CustomAIModelImplementation implements CustomAIModel {
   getModelInfo() {
     return {
       name: 'Google Gemini',
-      version: process.env.GEMINI_MODEL?.trim() || 'gemini-3.8-flash',
+      version: process.env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL,
       capabilities: this.config.context?.capabilities || []
     };
   }
@@ -176,6 +188,61 @@ function getGeminiApiKey(): string | null {
   const key = process.env.GEMINI_API_KEY?.trim();
   if (!key || key === 'your_api_key_here' || key.startsWith('your_')) return null;
   return key;
+}
+
+function geminiModelCandidates(): string[] {
+  const primary = process.env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL;
+  const seen = new Set<string>();
+  const models: string[] = [];
+  for (const model of [primary, ...FALLBACK_GEMINI_MODELS]) {
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    models.push(model);
+  }
+  return models;
+}
+
+async function requestGemini(
+  apiKey: string,
+  model: string,
+  payload: object
+): Promise<Response> {
+  const attempts = 2;
+  let lastResponse: Response | null = null;
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey
+          },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(20000)
+        }
+      );
+      lastResponse = response;
+      if (response.ok || !TRANSIENT_GEMINI_STATUS.has(response.status) || attempt === attempts) {
+        return response;
+      }
+
+      await response.text().catch(() => undefined);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error('Gemini request failed');
+      if (attempt === attempts) throw lastError;
+    }
+
+    const waitMs = 600 * attempt;
+    console.warn(`Gemini ${model} attempt ${attempt} failed; retrying in ${waitMs}ms`);
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+  }
+
+  if (lastResponse) return lastResponse;
+  throw lastError || new Error('Gemini request failed');
 }
 
 // Export singleton instance

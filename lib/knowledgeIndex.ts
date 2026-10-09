@@ -1,5 +1,6 @@
 // Main Knowledge Index - Combines all knowledge sources
 import { findGranularKnowledge } from './granularKnowledge';
+import { containsPhrase, isStandaloneGreeting } from './matchPhrase';
 import { findIdentityKnowledge, ardiIdentityKnowledge } from './ardiIdentity';
 import { findPersonalInjuryKnowledge, personalInjuryKnowledge } from './personalInjuryKnowledge';
 import { findCaseManagementKnowledge, caseManagementKnowledge } from './caseManagementKnowledge';
@@ -101,9 +102,18 @@ export function findKnowledge(userMessage: string, history: ConversationTurn[] =
   return lookupKnowledge(followUp.query);
 }
 
+function tryLookup<T>(label: string, lookup: () => T | null): T | null {
+  try {
+    return lookup();
+  } catch (error) {
+    console.error(`${label} lookup failed:`, error);
+    return null;
+  }
+}
+
 function lookupKnowledge(userMessage: string, options?: { skipGranular?: boolean }): KnowledgeResult | null {
   // PRIORITY 1: Check granular knowledge first for specific, targeted answers
-  const granularResult = options?.skipGranular ? null : findGranularKnowledge(userMessage);
+  const granularResult = options?.skipGranular ? null : tryLookup('granular', () => findGranularKnowledge(userMessage));
   if (granularResult) {
     return {
       content: granularResult.shortAnswer,
@@ -113,6 +123,7 @@ function lookupKnowledge(userMessage: string, options?: { skipGranular?: boolean
     };
   }
 
+  try {
   // PRIORITY 2: Check each knowledge domain in order of priority
   const identityResult = findIdentityKnowledge(userMessage);
   if (identityResult) {
@@ -251,6 +262,10 @@ function lookupKnowledge(userMessage: string, options?: { skipGranular?: boolean
   }
 
   return null;
+  } catch (error) {
+    console.error('Knowledge lookup failed:', error);
+    return null;
+  }
 }
 
 // Get all available knowledge categories
@@ -413,14 +428,14 @@ function scoreEntry(
   const msgNorm = normalize(userMessage);
   let score = 0;
 
-  // Exact trigger phrase contained
+  // Exact trigger phrase contained (whole words for single-token triggers)
   for (const trig of entry.triggers) {
-    if (trig && msgNorm.includes(trig)) score += 5;
+    if (trig && containsPhrase(msgNorm, trig)) score += 5;
   }
 
   // Keyword phrase contained
   for (const kw of entry.keywords) {
-    if (kw && msgNorm.includes(kw)) score += 2;
+    if (kw && containsPhrase(msgNorm, kw)) score += 2;
   }
 
   // Synonym/phrase expansions
@@ -503,12 +518,13 @@ export function shouldUseBasicKnowledge(userMessage: string): boolean {
     'what is ardi', 'ardi trivia', 'fun facts about ardi',
     'ardi personality', 'tell me something interesting about ardi',
     'ardi background', 'ardi story', 'what makes ardi unique',
-    'hello', 'hi', 'hey', 'greetings', 'good morning', 'good afternoon',
+    'greetings', 'good morning', 'good afternoon',
     'hi ardi', 'hello ardi', 'hey ardi', 'ardi capabilities',
     'what can ardi do', 'what can you do', 'ardi help'
   ];
 
-  return identityTriggers.some(trigger => message.includes(trigger));
+  if (isStandaloneGreeting(userMessage)) return true;
+  return identityTriggers.some(trigger => containsPhrase(message, trigger));
 }
 
 export { ardiIdentityKnowledge };

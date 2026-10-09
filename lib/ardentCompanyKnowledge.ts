@@ -1,5 +1,6 @@
 // Ardent Paralegal Business Solutions Company Knowledge
 // Classification: Internal-Only
+import { containsPhrase } from './matchPhrase';
 
 export interface ArdentCompanyEntry {
   id: string;
@@ -14,6 +15,35 @@ export interface ArdentCompanyEntry {
 }
 
 export const ardentCompanyKnowledge: ArdentCompanyEntry[] = [
+  {
+    id: 'ardent-clients',
+    category: 'Company Overview',
+    title: "Ardent's Clients",
+    content: `## 🤝 Who Are Ardent's Clients?
+
+**Ardent’s clients are law firms and legal departments.**
+
+Ardent Paralegal Business Solutions provides paralegal, administrative, and business-process outsourcing support so those legal teams can focus on legal work. We do not replace the attorney; we support the firm’s case operations.
+
+### Who we serve:
+- **Law firms** that need paralegal and case-management support
+- **Legal departments** that outsource supporting legal processes
+
+### Scale:
+When Ardent launched, the company had **one client**. It now serves **multiple clients** across legal specialties, with a team of over 100 employees.`,
+    keywords: ['ardent clients', 'law firms', 'legal departments', 'customers', 'who we serve'],
+    triggers: [
+      'ardent paralegal clients',
+      'ardent clients',
+      "ardent's clients",
+      'who are ardent clients',
+      'who does ardent serve',
+      'who does ardent work for',
+      'ardent customers'
+    ],
+    priority: 'high',
+    lastUpdated: '2026-10-09'
+  },
   {
     id: 'who-we-are',
     category: 'Company Overview',
@@ -385,14 +415,18 @@ The story of Ardent's founding demonstrates how vision, friendship, and shared v
 
 export function findArdentCompanyKnowledge(userMessage: string): ArdentCompanyEntry | null {
   const message = userMessage.toLowerCase();
-  
-  for (const entry of ardentCompanyKnowledge) {
+  const ranked = [...ardentCompanyKnowledge].sort((left, right) => {
+    const longest = (entry: ArdentCompanyEntry) => Math.max(...entry.triggers.map(trigger => trigger.length));
+    return longest(right) - longest(left);
+  });
+
+  for (const entry of ranked) {
     for (const trigger of entry.triggers) {
-      if (message.includes(trigger.toLowerCase())) {
+      if (containsPhrase(message, trigger)) {
         return entry;
       }
     }
   }
-  
+
   return null;
 } 

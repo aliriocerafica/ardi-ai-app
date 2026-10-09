@@ -1,4 +1,5 @@
 // Intake Process Domain Knowledge
+import { containsPhrase } from './matchPhrase';
 export interface IntakeProcessKnowledgeEntry {
   id: string;
   category: string;
@@ -192,14 +193,14 @@ If someone else is at fault for injuries and the client receives compensation fr
 
 export function findIntakeProcessKnowledge(userMessage: string): IntakeProcessKnowledgeEntry | null {
   const message = userMessage.toLowerCase();
-  
+
   for (const entry of intakeProcessKnowledge) {
     for (const trigger of entry.triggers) {
-      if (message.includes(trigger.toLowerCase())) {
+      if (containsPhrase(message, trigger)) {
         return entry;
       }
     }
   }
-  
+
   return null;
 } 

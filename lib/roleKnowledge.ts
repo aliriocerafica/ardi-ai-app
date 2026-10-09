@@ -1,3 +1,5 @@
+import { containsPhrase } from './matchPhrase';
+
 export interface RoleKnowledgeEntry {
   id: string;
   title: string;
@@ -168,7 +170,7 @@ export function findRoleKnowledge(userMessage: string): RoleKnowledgeEntry | nul
 
   for (const entry of ranked) {
     const hit = [...entry.triggers].sort((a, b) => b.length - a.length)
-      .find(trigger => message.includes(trigger.toLowerCase()));
+      .find(trigger => containsPhrase(message, trigger));
     if (hit) return entry;
   }
 

@@ -1,5 +1,6 @@
 // Intake & Initial Action Items Knowledge
 // Classification: Internal-Only
+import { containsPhrase } from './matchPhrase';
 
 export interface IntakeAndInitialActionItemsEntry {
   id: string;
@@ -453,7 +454,7 @@ export function findIntakeAndInitialActionItemsKnowledge(userMessage: string): I
   
   for (const entry of intakeAndInitialActionItemsKnowledge) {
     for (const trigger of entry.triggers) {
-      if (message.includes(trigger.toLowerCase())) {
+      if (containsPhrase(message, trigger)) {
         return entry;
       }
     }

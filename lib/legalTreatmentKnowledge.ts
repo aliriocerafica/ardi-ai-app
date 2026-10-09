@@ -1,5 +1,6 @@
 // Legal Treatment in Personal Injury Cases Knowledge
 // Classification: Internal-Only
+import { containsPhrase } from './matchPhrase';
 
 export interface LegalTreatmentEntry {
   id: string;
@@ -485,7 +486,7 @@ export function findLegalTreatmentKnowledge(userMessage: string): LegalTreatment
   
   for (const entry of legalTreatmentKnowledge) {
     for (const trigger of entry.triggers) {
-      if (message.includes(trigger.toLowerCase())) {
+      if (containsPhrase(message, trigger)) {
         return entry;
       }
     }
